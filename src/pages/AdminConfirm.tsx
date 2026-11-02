@@ -3,11 +3,13 @@ import { api, fmtNum, fmtTime, pointLabel, type ChangeRequest, type Entry } from
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
 import PointPicker, { type Point } from '../components/PointPicker';
-import { currentPoint } from '../data/points';
+import { allPoints } from '../data/points';
+import { useLivePoint } from '../hooks/useLivePoint';
 
 export default function AdminConfirm() {
   const { config } = useStore();
-  const [point, setPoint] = useState<Point | null>(null);
+  const fallback = useMemo<Point | null>(() => { const p = config ? allPoints(config)[0] : undefined; return p ? { date: p.date, time: p.time } : null; }, [config]);
+  const { point, setPoint, following, resetToLive, isLive } = useLivePoint(config, fallback);
   const { data: ent, reload: reloadEntries } = usePolling(() => api<{ entries: Entry[] }>('/entries'), 10000, []);
   const { data: reqs, reload: reloadReqs } = usePolling(() => api<{ requests: ChangeRequest[] }>('/change-requests'), 10000, []);
   const [busy, setBusy] = useState(false);
@@ -15,7 +17,6 @@ export default function AdminConfirm() {
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [edit, setEdit] = useState<{ entryId: string; cum: string; leave: string } | null>(null);
 
-  useEffect(() => { if (config && !point) setPoint(currentPoint(config)); }, [config, point]);
 
   const rows = useMemo(() => {
     if (!config || !point) return [];
@@ -88,7 +89,7 @@ export default function AdminConfirm() {
           <h1>시점 확정</h1>
           <span className="pill accent">입력 {entered} / {rows.length} · 확정 {confirmedN}</span>
         </div>
-        <PointPicker config={config} value={point} onChange={setPoint} />
+        <PointPicker config={config} value={point} onChange={setPoint} following={following} isLive={isLive} onResetToLive={resetToLive} />
         <div className="row">
           <button className="btn primary" disabled={busy || entered === 0} onClick={() => bulk(true)}>{pointLabel(point)} 일괄 확정</button>
           <button className="btn" disabled={busy || confirmedN === 0} onClick={() => bulk(false)}>일괄 해제</button>

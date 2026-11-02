@@ -5,7 +5,8 @@ import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
 import PointPicker, { type Point } from '../components/PointPicker';
 import Sheet from '../components/Sheet';
-import { currentPoint } from '../data/points';
+import { allPoints } from '../data/points';
+import { useLivePoint } from '../hooks/useLivePoint';
 
 interface Row {
   station: Station; districtName: string; slotId: string | null; entry: Entry | null;
@@ -13,12 +14,12 @@ interface Row {
 
 export default function Input() {
   const { config, me, refreshConfig } = useStore();
-  const [point, setPoint] = useState<Point | null>(null);
+  const fallback = useMemo<Point | null>(() => { const p = config ? allPoints(config)[0] : undefined; return p ? { date: p.date, time: p.time } : null; }, [config]);
+  const { point, setPoint, following, resetToLive, isLive } = useLivePoint(config, fallback);
   const { data, reload } = usePolling(() => api<{ entries: Entry[] }>('/entries'), 10000, []);
   const entries = data?.entries ?? [];
   const [active, setActive] = useState<Row | null>(null);
 
-  useEffect(() => { if (config && !point) setPoint(currentPoint(config)); }, [config, point]);
   useEffect(() => { const t = setInterval(refreshConfig, 60000); return () => clearInterval(t); }, [refreshConfig]);
 
   const rows = useMemo<Row[]>(() => {
@@ -44,7 +45,7 @@ export default function Input() {
           <h1>투표율 입력</h1>
           <span className="pill accent">{entered} / {applicable} 투표소 입력됨</span>
         </div>
-        <PointPicker config={config} value={point} onChange={setPoint} />
+        <PointPicker config={config} value={point} onChange={setPoint} following={following} isLive={isLive} onResetToLive={resetToLive} />
         {locked && <div className="alert danger">총관리자가 입력을 잠갔습니다. 지금은 입력할 수 없습니다.</div>}
         {config.election.enforce_time_window && Date.now() < slotEpoch(point.date, point.time) - 10 * 60 * 1000 && (
           <div className="alert warn">이 시점은 집계 시각 10분 전부터 입력할 수 있습니다.</div>

@@ -4,22 +4,23 @@ import { api, fmtNum, fmtPct, noticeDate, remainingToThreshold, shortDate, type 
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
 import PointPicker, { type Point } from '../components/PointPicker';
+import { useLivePoint } from '../hooks/useLivePoint';
 
 export default function Notice() {
   const { config } = useStore();
   const { data: tally } = usePolling(() => api<Tally>('/tally'), 15000, []);
-  const [point, setPoint] = useState<Point | null>(null);
+  const fallback = useMemo<Point | null>(() => {
+    if (!tally) return null;
+    const withData = tally.points.filter((p) => p.districts.some((d) => d.stations.some((s) => s.entered)));
+    const p = withData.at(-1) ?? tally.points[0];
+    return p ? { date: p.date, time: p.time } : null;
+  }, [tally]);
+  const { point, setPoint, following, resetToLive, isLive } = useLivePoint(config, fallback);
   const [copied, setCopied] = useState(false);
   const [images, setImages] = useState<NoticeImages | null>(null);
   const [imgError, setImgError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(false);
 
-  useEffect(() => {
-    if (!tally || point) return;
-    const withData = tally.points.filter((p) => p.districts.some((d) => d.stations.some((s) => s.entered)));
-    const p = withData.at(-1) ?? tally.points[0];
-    if (p) setPoint({ date: p.date, time: p.time });
-  }, [tally, point]);
 
   const current = useMemo(() => tally?.points.find((p) => p.date === point?.date && p.time === point?.time) ?? null, [tally, point]);
 
@@ -60,7 +61,7 @@ export default function Notice() {
     <main className="narrow stack">
       <div className="card stack">
         <h1>공지 생성</h1>
-        <PointPicker config={config} value={point} onChange={setPoint} />
+        <PointPicker config={config} value={point} onChange={setPoint} following={following} isLive={isLive} onResetToLive={resetToLive} />
         {current.total.missing > 0 && <div className="alert warn">{current.total.missing}개 투표소가 이 시점에 미입력입니다. 직전 값을 이어서 계산한 수치입니다.</div>}
       </div>
       <div className="card stack">

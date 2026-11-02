@@ -18,7 +18,7 @@ export function usePointAxis(config: Config | null) {
   }, [config]);
 }
 
-export default function PointPicker({ config, value, onChange }: { config: Config | null; value: Point | null; onChange: (p: Point) => void }) {
+export default function PointPicker({ config, value, onChange, following, isLive, onResetToLive }: { config: Config | null; value: Point | null; onChange: (p: Point) => void; following?: boolean; isLive?: boolean; onResetToLive?: () => void }) {
   const { days } = usePointAxis(config);
   if (!value || days.length === 0) return null;
   const day = days.find((d) => d.date === value.date) ?? days[0];
@@ -33,6 +33,10 @@ export default function PointPicker({ config, value, onChange }: { config: Confi
         ))}
       </div>
       <div className="chips" role="tablist" aria-label="시각">
+        {onResetToLive !== undefined && (
+          following ? <span className={`pill ${isLive ? 'good' : 'muted'}`} style={{ alignSelf: 'center' }}>{isLive ? '● 현재 시점 자동' : '선거 시작 전 · 최근 시점'}</span>
+            : <button className="chip ext" onClick={onResetToLive}>{isLive ? '현재 시점으로' : '자동 선택으로'}</button>
+        )}
         {day.times.map((t) => (
           <button key={t} role="tab" aria-selected={t === value.time} className={`chip ${t === value.time ? 'active' : ''}`} onClick={() => onChange({ date: day.date, time: t })}>
             {t}

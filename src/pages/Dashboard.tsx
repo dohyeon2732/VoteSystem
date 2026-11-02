@@ -6,23 +6,24 @@ import { api, fmtNum, fmtPct, fmtTime, pointLabel, remainingToThreshold, shortDa
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
 import PointPicker, { type Point } from '../components/PointPicker';
+import { useLivePoint } from '../hooks/useLivePoint';
 
 export default function Dashboard() {
   const { config, me, refreshConfig } = useStore();
   const { data: tally, error } = usePolling(() => api<Tally>('/tally'), 10000, []);
-  const [point, setPoint] = useState<Point | null>(null);
+  // 선거 시작 전에는 입력이 있는 마지막 시점, 없으면 첫 시점
+  const fallback = useMemo<Point | null>(() => {
+    if (!tally) return null;
+    const withData = tally.points.filter((p) => p.districts.some((d) => d.stations.some((s) => s.entered)));
+    const p = withData.at(-1) ?? tally.points[0];
+    return p ? { date: p.date, time: p.time } : null;
+  }, [tally]);
+  const { point, setPoint, following, resetToLive, isLive } = useLivePoint(config, fallback);
   const [expanded, setExpanded] = useState<string | null>(null);
   const reduce = useReducedMotion();
 
   useEffect(() => { const t = setInterval(refreshConfig, 60000); return () => clearInterval(t); }, [refreshConfig]);
 
-  // 기본 선택: 입력이 있는 마지막 시점, 없으면 첫 시점
-  useEffect(() => {
-    if (!tally || point) return;
-    const withData = tally.points.filter((p) => p.districts.some((d) => d.stations.some((s) => s.entered)));
-    const p = withData.at(-1) ?? tally.points[0];
-    if (p) setPoint({ date: p.date, time: p.time });
-  }, [tally, point]);
 
   const current: TallyPoint | null = useMemo(() => tally?.points.find((p) => p.date === point?.date && p.time === point?.time) ?? null, [tally, point]);
   const prevDay: TallyPoint | null = useMemo(() => {
@@ -62,7 +63,7 @@ export default function Dashboard() {
             {isFinal && <span className="pill accent">최종 시점</span>}
           </div>
         </div>
-        <PointPicker config={config} value={point} onChange={(p) => { setPoint(p); }} />
+        <PointPicker config={config} value={point} onChange={setPoint} following={following} isLive={isLive} onResetToLive={resetToLive} />
       </div>
 
       <div className="grid cols-2">
