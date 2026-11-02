@@ -14,7 +14,7 @@ export default function Layout() {
     <>
       <header className="topbar">
         <div className="topbar-inner">
-          <div className="brand">{config?.election.name ?? '투표율 집계'}</div>
+          <div className="brand"><img src="/logo.svg" alt="" className="brand-logo" />{config?.election.name ?? '투표율 집계'}</div>
           <nav className="nav">
             <NavLink to="/dashboard" className={cls}>현황판</NavLink>
             <NavLink to="/input" className={cls}>입력</NavLink>

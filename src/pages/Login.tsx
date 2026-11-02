@@ -35,6 +35,7 @@ export default function Login() {
         transition={{ type: 'spring', bounce: 0, duration: 0.4 }}
       >
         <div>
+          <img src="/logo.svg" alt="" className="login-logo" />
           <h1>투표율 집계 시스템</h1>
           <p className="muted small">중앙선거관리위원회 전용. 이름과 발급받은 코드로 들어옵니다.</p>
         </div>
