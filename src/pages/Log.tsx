@@ -7,7 +7,7 @@ const ACTION_KO: Record<string, string> = {
   'entry.create': '입력', 'entry.overwrite': '덮어쓰기', 'entry.admin_edit': '관리자 직접 수정', 'entry.confirm': '확정', 'entry.unconfirm': '확정 해제',
   'slot.confirm_all': '시점 일괄 확정', 'slot.unconfirm_all': '시점 일괄 해제', 'request.create': '수정요청', 'request.approve': '승인', 'request.reject': '거절',
   'election.update': '선거 설정 변경', 'voters.update': '유권자수 변경', 'station.update': '투표소 변경', 'slot.add': '시점 추가', 'slot.remove': '시점 삭제',
-  'member.create': '위원 등록', 'member.regenerate': '코드 재발급', 'member.update': '위원 변경', 'system.reset': '전체 초기화',
+  'member.create': '위원 등록', 'member.regenerate': '코드 재발급', 'member.update': '위원 변경', 'system.reset': '전체 초기화', 'system.mock': '목업 데이터 입력',
 };
 
 function describe(j: string | null): string {

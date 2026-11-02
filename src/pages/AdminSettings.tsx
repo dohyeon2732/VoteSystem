@@ -129,6 +129,12 @@ export default function AdminSettings() {
       </div>
 
       <div className="card stack">
+        <h1>목업 데이터 넣기 (테스트 모드)</h1>
+        <p className="muted small">리허설·화면 확인용. 유권자수가 비어 있는 선거구에는 예시 유권자수를 넣고, 첫 투표일의 앞 시점 4개에 임의 누적 투표자수를 채웁니다. 이미 입력된 칸은 건드리지 않으며, 입력자 이름에 "(목업)"이 붙습니다.</p>
+        <button className="btn" onClick={() => run(() => api<{ created: number; votersSet: number }>('/mock', { body: {} }).then((r) => { setMsg(`목업 입력 ${r.created}건을 넣었습니다. 현황판에서 확인하세요.`); }), '목업 데이터를 넣었습니다.')}>목업 데이터 넣기</button>
+      </div>
+
+      <div className="card stack">
         <h1 style={{ color: 'var(--danger)' }}>전체 입력 초기화 (테스트 모드)</h1>
         <p className="muted small">리허설 후 모든 입력값·수정요청·변경 로그를 지웁니다. 설정, 명부, 유권자수는 유지됩니다. 되돌릴 수 없습니다.</p>
         <div className="row">

@@ -442,6 +442,48 @@ route('POST', '/reset', async (ctx) => {
   return { ok: true };
 });
 
+// ---------- Admin: mock data (test mode) ----------
+/** 리허설용 목업: 유권자수가 0인 선거구에 예시 유권자수를 넣고, 첫 투표일의 앞 시점들에 임의 누적값을 채운다. */
+route('POST', '/mock', async (ctx) => {
+  const me = requireAdmin(ctx);
+  const cfg = await loadConfig(ctx.db);
+  const SAMPLE_VOTERS: Record<string, number> = {
+    '건축대학': 373, '경영대학': 1412, '공과대학': 4750, '국제대학': 361, '문과대학': 1550, '부동산과학원': 420, '사범대학': 880,
+    '사회과학대학': 1420, '상허교양대학': 1200, '생명과학대학': 1120, '수의과대학': 460, '예술디자인대학': 990, '융합과학기술원': 1180, '이과대학': 405,
+  };
+  let votersSet = 0;
+  for (const d of cfg.districts) {
+    if (d.base_voters === 0 && SAMPLE_VOTERS[d.name]) { await ctx.db.update('district', { id: d.id }, { base_voters: SAMPLE_VOTERS[d.name] }); d.base_voters = SAMPLE_VOTERS[d.name]; votersSet++; }
+  }
+  const day = cfg.days.find((d) => !d.is_extension) ?? cfg.days[0];
+  if (!day) throw new HttpError(400, 'no_day', '투표일이 없습니다.');
+  const slotsPerPoint = Number(ctx.req.body?.points ?? 4);
+  let seed = 7;
+  const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+  const now = nowIso();
+  let created = 0;
+  for (const st of cfg.stations) {
+    const d = cfg.districts.find((x) => x.id === st.district_id)!;
+    const share = cfg.stations.filter((x) => x.district_id === d.id).length;
+    const base = d.base_voters / share;
+    const slots = cfg.slots.filter((x) => x.station_id === st.id && x.day_id === day.id).sort((a, b) => a.time.localeCompare(b.time));
+    const take = slots.length <= 2 ? 1 : Math.min(slotsPerPoint, slots.length - 1);
+    let cum = 0;
+    for (const slot of slots.slice(0, take)) {
+      if (await ctx.db.get('entry', { station_id: st.id, slot_id: slot.id })) continue;
+      cum += Math.round(base * (0.05 + rand() * 0.05));
+      const leave = Math.round(cum * 0.02);
+      await ctx.db.insert<Entry>('entry', {
+        id: randomUUID(), station_id: st.id, slot_id: slot.id, cumulative: cum, leave_cumulative: leave,
+        entered_by: me.id, entered_by_name: `${me.name}(목업)`, entered_at: now, confirmed: false, confirmed_by: null, confirmed_at: null,
+      });
+      created++;
+    }
+  }
+  await log(ctx.db, me, 'system.mock', { note: `목업 입력 ${created}건, 유권자수 ${votersSet}개 선거구` });
+  return { ok: true, created, votersSet };
+});
+
 // ---------- Export ----------
 route('GET', '/export.csv', async (ctx) => {
   requireAdmin(ctx);
