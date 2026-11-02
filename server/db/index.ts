@@ -5,8 +5,9 @@ let dbPromise: Promise<Db> | null = null;
 export function getDb(): Promise<Db> {
   if (!dbPromise) {
     dbPromise = (async () => {
-      const url = process.env.SUPABASE_URL;
-      const key = process.env.SUPABASE_SERVICE_KEY;
+      // 대시보드에서 "REST URL"(…/rest/v1)이나 끝에 /가 붙은 값을 넣어도 동작하도록 정리
+      const url = (process.env.SUPABASE_URL ?? '').trim().replace(/\/(rest|auth|storage)\/v1\/?$/, '').replace(/\/+$/, '');
+      const key = (process.env.SUPABASE_SERVICE_KEY ?? '').trim();
       if (url && key) {
         const { createSupabaseDb } = await import('./supabase.js');
         return createSupabaseDb(url, key);
