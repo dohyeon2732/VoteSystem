@@ -6,7 +6,7 @@ import type {
 import {
   createSessionToken, generateCode, hashCode, readSessionToken, verifyCode, SESSION_TTL_MS,
 } from './auth.js';
-import { currentTallyTimes, ensureSeed, regenerateSlotsForStation } from './logic/seed.js';
+import { currentTallyTimes, ensureSeed, regenerateSlots, regenerateSlotsForStation } from './logic/seed.js';
 import { computeTally } from './logic/tally.js';
 import { generateSlotTimes, nowIso, slotEpoch, weekdayKo } from './logic/time.js';
 
@@ -375,8 +375,7 @@ route('PUT', '/tally-times', async (ctx) => {
   if (blocked.size) {
     throw new HttpError(409, 'has_entry', `${[...blocked].sort().join(', ')} 시점에 입력값이 있어 바꿀 수 없습니다. 입력값을 지우거나 초기화한 뒤 다시 시도하세요.`);
   }
-  let kept = 0;
-  for (const st of stations) kept += await regenerateSlotsForStation(ctx.db, st, times);
+  const kept = await regenerateSlots(ctx.db, stations, times);
   await log(ctx.db, me, 'slot.tally_times', { before_json: JSON.stringify(before), after_json: JSON.stringify(times), note: kept ? `입력값 있어 유지된 시점 ${kept}개` : null });
   return { times, kept };
 });
@@ -459,11 +458,8 @@ route('PUT', '/members/:id', async (ctx) => {
 // ---------- Admin: reset (test mode) ----------
 route('POST', '/reset', async (ctx) => {
   const me = requireAdmin(ctx);
-  if (ctx.req.body?.confirm !== '초기화') throw new HttpError(400, 'bad_request', '확인 문구가 맞지 않습니다.');
-  for (const t of ['change_request', 'entry', 'audit_log']) {
-    const rows = await ctx.db.all<{ id: string }>(t);
-    for (const r of rows) await ctx.db.remove(t, { id: r.id });
-  }
+  if (String(ctx.req.body?.confirm ?? '').normalize('NFC').trim() !== '초기화') throw new HttpError(400, 'bad_request', '확인 문구가 맞지 않습니다.');
+  for (const t of ['change_request', 'entry', 'audit_log']) await ctx.db.removeAll(t);
   await log(ctx.db, me, 'system.reset', { note: '전체 입력 초기화' });
   return { ok: true };
 });

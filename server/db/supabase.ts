@@ -36,5 +36,16 @@ export function createSupabaseDb(url: string, serviceKey: string): Db {
     async remove(table, where) {
       check(await applyWhere(sb.from(table).delete(), where));
     },
+    async insertMany(table, rows) {
+      for (let i = 0; i < rows.length; i += 500) check(await sb.from(table).insert(rows.slice(i, i + 500) as any));
+    },
+    async removeIds(table, ids) {
+      // URL 길이 제한을 피하려고 100개씩
+      for (let i = 0; i < ids.length; i += 100) check(await sb.from(table).delete().in('id', ids.slice(i, i + 100)));
+    },
+    async removeAll(table) {
+      // PostgREST는 조건 없는 DELETE를 막으므로 항상 참인 조건을 건다
+      check(await sb.from(table).delete().not('id', 'is', null));
+    },
   };
 }

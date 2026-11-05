@@ -7,6 +7,12 @@ export interface Db {
   insert<T extends object>(table: string, row: T): Promise<T>;
   update(table: string, where: Where, patch: Record<string, unknown>): Promise<void>;
   remove(table: string, where: Where): Promise<void>;
+  /** 여러 행을 한 번에 넣는다. */
+  insertMany<T extends object>(table: string, rows: T[]): Promise<void>;
+  /** id 목록에 해당하는 행을 한 번에 지운다. */
+  removeIds(table: string, ids: string[]): Promise<void>;
+  /** 테이블의 모든 행을 지운다. */
+  removeAll(table: string): Promise<void>;
 }
 
 /** Boolean columns per table — SQLite stores them as 0/1, Supabase as boolean. */

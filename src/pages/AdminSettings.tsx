@@ -16,7 +16,9 @@ function Toggle({ label, hint, checked, onChange, danger }: { label: string; hin
 
 export default function AdminSettings() {
   const { config, refreshConfig } = useStore();
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsgState] = useState<{ text: string; ok: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const setMsg = (text: string | null, ok = true) => setMsgState(text ? { text, ok } : null);
   const [name, setName] = useState('');
   const [threshold, setThreshold] = useState('50');
   const [voters, setVoters] = useState<Record<string, string>>({});
@@ -34,8 +36,8 @@ export default function AdminSettings() {
   if (!config) return <main><p className="muted center">불러오는 중…</p></main>;
   const el = config.election;
   const run = async (fn: () => Promise<unknown>, ok: string) => {
-    setMsg(null);
-    try { await fn(); await refreshConfig(); setMsg(ok); } catch (e) { setMsg((e as Error).message); }
+    setMsg(null); setBusy(true);
+    try { await fn(); await refreshConfig(); setMsg(ok); } catch (e) { setMsg((e as Error).message, false); } finally { setBusy(false); }
   };
   const tallyTimes = [...new Set(config.slots.filter((x) => !x.is_close).map((x) => x.time))].sort();
   const closeTimes = [...new Set(config.stations.map((x) => x.close_time))].sort();
@@ -44,7 +46,11 @@ export default function AdminSettings() {
 
   return (
     <main className="stack">
-      {msg && <div className="alert info">{msg}</div>}
+      {(msg || busy) && (
+        <div className={`alert toast ${busy ? 'info' : msg?.ok ? 'good' : 'danger'}`} role="status" onClick={() => setMsg(null)}>
+          {busy ? '처리 중…' : msg?.text}
+        </div>
+      )}
       <div className="grid cols-2">
         <div className="card stack">
           <h1>선거 설정</h1>
@@ -138,7 +144,7 @@ export default function AdminSettings() {
         <p className="muted small">리허설 후 모든 입력값·수정요청·변경 로그를 지웁니다. 설정, 명부, 유권자수는 유지됩니다. 되돌릴 수 없습니다.</p>
         <div className="row">
           <input className="input" style={{ maxWidth: 220 }} placeholder="초기화 라고 입력" value={resetText} onChange={(e) => setResetText(e.target.value)} />
-          <button className="btn danger" disabled={resetText !== '초기화'} onClick={() => run(() => api('/reset', { body: { confirm: resetText } }).then(() => setResetText('')), '모든 입력을 초기화했습니다.')}>초기화 실행</button>
+          <button className="btn danger" disabled={busy || resetText.normalize('NFC').trim() !== '초기화'} onClick={() => run(() => api('/reset', { body: { confirm: '초기화' } }).then(() => setResetText('')), '모든 입력을 초기화했습니다.')}>초기화 실행</button>
         </div>
       </div>
     </main>

@@ -94,5 +94,26 @@ export function createSqliteDb(path: string): Db {
       const w = whereSql(where);
       db.prepare(`DELETE FROM ${table}${w.sql}`).run(...(w.params as any[]));
     },
+    async insertMany(table, rows) {
+      if (!rows.length) return;
+      db.exec('BEGIN');
+      try {
+        for (const row of rows) {
+          const r = toRow(table, row as Record<string, unknown>);
+          const keys = Object.keys(r);
+          db.prepare(`INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...(Object.values(r) as any[]));
+        }
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+    },
+    async removeIds(table, ids) {
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500);
+        db.prepare(`DELETE FROM ${table} WHERE id IN (${chunk.map(() => '?').join(',')})`).run(...chunk);
+      }
+    },
+    async removeAll(table) {
+      db.prepare(`DELETE FROM ${table}`).run();
+    },
   };
 }

@@ -181,6 +181,13 @@ textarea.input { resize: vertical; min-height: 80px; }
 .alert.warn { background: var(--warn-soft); color: var(--warn); }
 .alert.good { background: var(--good-soft); color: var(--good); }
 .alert.info { background: var(--accent-soft); color: var(--accent); }
+.alert.toast {
+  position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 50;
+  width: min(560px, calc(100% - 32px)); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18); cursor: pointer;
+}
+.alert.toast.good { background: linear-gradient(var(--good-soft), var(--good-soft)), var(--surface); }
+.alert.toast.danger { background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--surface); }
+.alert.toast.info { background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface); }
 
 /* ---- table ---- */
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -16px; padding: 0 16px; }
