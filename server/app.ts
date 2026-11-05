@@ -6,7 +6,7 @@ import type {
 import {
   createSessionToken, generateCode, hashCode, readSessionToken, verifyCode, SESSION_TTL_MS,
 } from './auth.js';
-import { ensureSeed, regenerateSlotsForStation } from './logic/seed.js';
+import { currentTallyTimes, ensureSeed, regenerateSlotsForStation } from './logic/seed.js';
 import { computeTally } from './logic/tally.js';
 import { generateSlotTimes, nowIso, slotEpoch, weekdayKo } from './logic/time.js';
 
@@ -350,9 +350,35 @@ route('PUT', '/stations/:id', async (ctx) => {
   const next = { ...s, ...patch };
   if (next.open_time >= next.close_time) throw new HttpError(400, 'bad_request', '종료 시각은 시작 시각보다 늦어야 합니다.');
   await ctx.db.update('station', { id: s.id }, patch);
-  if (patch.open_time || patch.close_time) await regenerateSlotsForStation(ctx.db, next);
+  if (patch.open_time || patch.close_time) await regenerateSlotsForStation(ctx.db, next, await currentTallyTimes(ctx.db));
   await log(ctx.db, me, 'station.update', { station_id: s.id, before_json: JSON.stringify(s), after_json: JSON.stringify(next) });
   return { station: next };
+});
+
+/** 공통 집계 시각 목록을 바꾸고 모든 투표소·모든 날짜의 시점을 다시 만든다. */
+route('PUT', '/tally-times', async (ctx) => {
+  const me = requireAdmin(ctx);
+  const raw = ctx.req.body?.times;
+  if (!Array.isArray(raw) || raw.length > 24) throw new HttpError(400, 'bad_request', '집계 시각 목록이 올바르지 않습니다.');
+  const times = [...new Set(raw.map((t) => String(t).trim()))].sort();
+  for (const t of times) if (!TIME_RE.test(t)) throw new HttpError(400, 'bad_request', `시각 형식 오류: ${t}`);
+  const before = await currentTallyTimes(ctx.db);
+  const stations = await ctx.db.all<Station>('station');
+  // 지워질 시점에 입력값이 있으면 막는다 (남겨 두면 공통 시각 목록에 다시 섞여 들어옴)
+  const [slots, entries] = await Promise.all([ctx.db.all<Slot>('slot'), ctx.db.all<Entry>('entry')]);
+  const used = new Set(entries.map((e) => e.slot_id));
+  const blocked = new Set<string>();
+  for (const st of stations) {
+    const wanted = new Set(generateSlotTimes(st.open_time, st.close_time, times).map((x) => x.time));
+    for (const sl of slots) if (sl.station_id === st.id && !wanted.has(sl.time) && used.has(sl.id)) blocked.add(sl.time);
+  }
+  if (blocked.size) {
+    throw new HttpError(409, 'has_entry', `${[...blocked].sort().join(', ')} 시점에 입력값이 있어 바꿀 수 없습니다. 입력값을 지우거나 초기화한 뒤 다시 시도하세요.`);
+  }
+  let kept = 0;
+  for (const st of stations) kept += await regenerateSlotsForStation(ctx.db, st, times);
+  await log(ctx.db, me, 'slot.tally_times', { before_json: JSON.stringify(before), after_json: JSON.stringify(times), note: kept ? `입력값 있어 유지된 시점 ${kept}개` : null });
+  return { times, kept };
 });
 
 route('POST', '/slots', async (ctx) => {

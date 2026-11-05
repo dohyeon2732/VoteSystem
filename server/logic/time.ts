@@ -25,11 +25,17 @@ export function minutesToTime(min: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-/** 시작 + 2h 간격 + 마감 시각. 09:00~18:00 → 11,13,15,17,18 / 18:30~22:30 → 20:30, 22:30 */
-export function generateSlotTimes(open: string, close: string, intervalMin = 120): { time: string; isClose: boolean }[] {
-  const o = timeToMinutes(open), c = timeToMinutes(close);
-  const out: { time: string; isClose: boolean }[] = [];
-  for (let t = o + intervalMin; t < c; t += intervalMin) out.push({ time: minutesToTime(t), isClose: false });
+/** 기본 집계 시각. 각 투표소는 운영시간 안에 드는 시각 + 마감 시각을 시점으로 가진다. */
+export const DEFAULT_TALLY_TIMES = ['12:00', '15:00', '18:00'];
+
+/** 공통 집계 시각 목록 → 투표소 시점. 09:00~18:00 → 12:00, 15:00, 18:00(마감) / 18:30~22:30 → 22:30(마감) */
+export function generateSlotTimes(open: string, close: string, tallyTimes: string[]): { time: string; isClose: boolean }[] {
+  const out = [...new Set(tallyTimes)].filter((t) => t > open && t < close).sort().map((time) => ({ time, isClose: false }));
   out.push({ time: close, isClose: true });
   return out;
+}
+
+/** 현재 슬롯에서 공통 집계 시각 목록을 읽는다 (마감 시점 제외). */
+export function tallyTimesFromSlots(slots: { time: string; is_close: boolean }[]): string[] {
+  return [...new Set(slots.filter((s) => !s.is_close).map((s) => s.time))].sort();
 }

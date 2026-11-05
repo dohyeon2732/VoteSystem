@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Db, District, Election, ElectionDay, Member, Station } from '../db/types.js';
-import { generateSlotTimes, nowIso } from './time.js';
+import { DEFAULT_TALLY_TIMES, generateSlotTimes, nowIso, tallyTimesFromSlots } from './time.js';
 import { hashCode } from '../auth.js';
 
 const DAYS = [
@@ -34,12 +34,19 @@ const DISTRICTS: { name: string; stations?: { name: string; open: string; close:
   { name: '이과대학' },
 ];
 
-export async function regenerateSlotsForStation(db: Db, station: Station): Promise<void> {
+/** 현재 DB의 공통 집계 시각 목록 (마감 제외). 시점이 하나도 없으면 기본값. */
+export async function currentTallyTimes(db: Db): Promise<string[]> {
+  const slots = await db.all<{ time: string; is_close: boolean }>('slot');
+  return slots.length ? tallyTimesFromSlots(slots) : [...DEFAULT_TALLY_TIMES];
+}
+
+/** 투표소 시점을 공통 집계 시각 기준으로 다시 만든다. 입력값이 있는 시점은 지우지 않고, 남은 개수를 돌려준다. */
+export async function regenerateSlotsForStation(db: Db, station: Station, tallyTimes: string[]): Promise<number> {
   const days = await db.all<ElectionDay>('election_day');
   const existing = await db.all<{ id: string; day_id: string; time: string }>('slot', { station_id: station.id });
   const wanted = new Set<string>();
   for (const day of days) {
-    for (const { time, isClose } of generateSlotTimes(station.open_time, station.close_time)) {
+    for (const { time, isClose } of generateSlotTimes(station.open_time, station.close_time, tallyTimes)) {
       wanted.add(`${day.id}|${time}`);
       const found = existing.find((s) => s.day_id === day.id && s.time === time);
       if (found) {
@@ -49,12 +56,15 @@ export async function regenerateSlotsForStation(db: Db, station: Station): Promi
       }
     }
   }
-  // remove auto-generated slots no longer wanted, but keep any that already have entries
+  // remove slots no longer wanted, but keep any that already have entries
+  let kept = 0;
   for (const s of existing) {
     if (wanted.has(`${s.day_id}|${s.time}`)) continue;
     const hasEntry = await db.get('entry', { slot_id: s.id });
-    if (!hasEntry) await db.remove('slot', { id: s.id });
+    if (hasEntry) kept++;
+    else await db.remove('slot', { id: s.id });
   }
+  return kept;
 }
 
 export async function ensureSeed(db: Db): Promise<void> {
@@ -87,7 +97,7 @@ export async function ensureSeed(db: Db): Promise<void> {
           id: randomUUID(), district_id: district.id, name: s.name, sort: stationSort++, open_time: s.open, close_time: s.close,
         };
         await db.insert('station', station);
-        await regenerateSlotsForStation(db, station);
+        await regenerateSlotsForStation(db, station, DEFAULT_TALLY_TIMES);
       }
     }
   }

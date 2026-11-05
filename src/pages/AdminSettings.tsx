@@ -21,7 +21,7 @@ export default function AdminSettings() {
   const [threshold, setThreshold] = useState('50');
   const [voters, setVoters] = useState<Record<string, string>>({});
   const [times, setTimes] = useState<Record<string, { open: string; close: string }>>({});
-  const [slotForm, setSlotForm] = useState<{ station: string; day: string; time: string }>({ station: '', day: '', time: '' });
+  const [newTime, setNewTime] = useState('');
   const [resetText, setResetText] = useState('');
 
   useEffect(() => {
@@ -29,7 +29,6 @@ export default function AdminSettings() {
     setName(config.election.name); setThreshold(String(config.election.threshold_pct));
     setVoters(Object.fromEntries(config.districts.map((d) => [d.id, String(d.base_voters)])));
     setTimes(Object.fromEntries(config.stations.map((s) => [s.id, { open: s.open_time, close: s.close_time }])));
-    setSlotForm((f) => ({ station: f.station || config.stations[0]?.id || '', day: f.day || config.days[0]?.id || '', time: f.time }));
   }, [config]);
 
   if (!config) return <main><p className="muted center">불러오는 중…</p></main>;
@@ -38,6 +37,9 @@ export default function AdminSettings() {
     setMsg(null);
     try { await fn(); await refreshConfig(); setMsg(ok); } catch (e) { setMsg((e as Error).message); }
   };
+  const tallyTimes = [...new Set(config.slots.filter((x) => !x.is_close).map((x) => x.time))].sort();
+  const closeTimes = [...new Set(config.stations.map((x) => x.close_time))].sort();
+  const applyTimes = (next: string[], ok: string) => run(() => api('/tally-times', { method: 'PUT', body: { times: next } }), ok);
   const patchElection = (patch: Partial<Election>, ok = '저장했습니다.') => run(() => api('/election', { method: 'PUT', body: patch }), ok);
 
   return (
@@ -80,11 +82,28 @@ export default function AdminSettings() {
       </div>
 
       <div className="card stack">
-        <h1>투표소 운영시간과 집계 시점</h1>
-        <p className="muted small">운영시간을 바꾸면 시점이 "시작+2시간 간격 + 마감"으로 다시 생성됩니다. 입력값이 있는 시점은 유지됩니다.</p>
+        <h1>집계 시각</h1>
+        <p className="muted small">모든 투표소·모든 날짜에 공통으로 적용됩니다. 각 투표소는 운영시간 안에 드는 집계 시각과 자기 마감 시각({closeTimes.join(', ')})을 시점으로 가집니다. 바꾸면 즉시 다시 만들어집니다. 없어질 시점에 입력값이 있으면 바뀌지 않으니, 리허설 데이터는 먼저 초기화하세요.</p>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          {tallyTimes.length === 0 && <span className="muted small">공통 집계 시각이 없습니다. 마감 시각에만 집계합니다.</span>}
+          {tallyTimes.map((t) => (
+            <span key={t} className="pill" style={{ gap: 4 }}>
+              {t}
+              <button className="btn sm ghost" style={{ minHeight: 20, padding: '0 4px' }} aria-label={`${t} 집계 시각 삭제`} title="이 집계 시각을 삭제"
+                onClick={() => { if (confirm(`${t} 집계 시각을 모든 투표소·날짜에서 삭제할까요?`)) applyTimes(tallyTimes.filter((x) => x !== t), `${t} 집계 시각을 삭제했습니다.`); }}>×</button>
+            </span>
+          ))}
+        </div>
+        <div className="form-row">
+          <div className="field" style={{ flex: '0 0 auto' }}><label>집계 시각 추가</label><input className="input" type="time" value={newTime} onChange={(e) => setNewTime(e.target.value)} /></div>
+          <button className="btn" disabled={!newTime || tallyTimes.includes(newTime)} onClick={() => { const t = newTime; setNewTime(''); applyTimes([...tallyTimes, t], `${t} 집계 시각을 추가했습니다.`); }}>추가</button>
+        </div>
+
+        <h2 style={{ marginTop: 8 }}>투표소 운영시간</h2>
+        <p className="muted small">운영시간을 바꾸면 그 투표소의 시점이 위 집계 시각 기준으로 다시 만들어집니다.</p>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>투표소</th><th>시작</th><th>종료</th><th></th><th>시점 ({shortDate(config.days[0].date)} 기준)</th></tr></thead>
+            <thead><tr><th>투표소</th><th>시작</th><th>종료</th><th></th><th>시점</th></tr></thead>
             <tbody>
               {config.stations.map((s: Station) => {
                 const t = times[s.id] ?? { open: s.open_time, close: s.close_time };
@@ -97,15 +116,7 @@ export default function AdminSettings() {
                     <td><button className="btn sm" disabled={t.open === s.open_time && t.close === s.close_time} onClick={() => run(() => api(`/stations/${s.id}`, { method: 'PUT', body: { open_time: t.open, close_time: t.close } }), `${s.name} 시간을 저장하고 시점을 다시 만들었습니다.`)}>저장</button></td>
                     <td className="small">
                       {daySlots.map((x) => (
-                        <span key={x.id} className="pill muted" style={{ marginRight: 4 }}>
-                          {x.time}{x.is_close ? ' 마감' : ''}
-                          <button className="btn sm ghost" style={{ minHeight: 20, padding: '0 4px' }} title="이 시점을 모든 날짜에서 삭제" onClick={() => run(async () => {
-                            for (const d of config.days) {
-                              const sl = config.slots.find((y) => y.station_id === s.id && y.day_id === d.id && y.time === x.time);
-                              if (sl) await api(`/slots/${sl.id}`, { method: 'DELETE' });
-                            }
-                          }, `${s.name} ${x.time} 시점을 삭제했습니다.`)}>×</button>
-                        </span>
+                        <span key={x.id} className="pill muted" style={{ marginRight: 4 }}>{x.time}{x.is_close ? ' 마감' : ''}</span>
                       ))}
                     </td>
                   </tr>
@@ -113,18 +124,6 @@ export default function AdminSettings() {
               })}
             </tbody>
           </table>
-        </div>
-        <div className="form-row">
-          <div className="field wide"><label>시점 추가 · 투표소</label>
-            <select className="input" value={slotForm.station} onChange={(e) => setSlotForm({ ...slotForm, station: e.target.value })}>{config.stations.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
-          <div className="field"><label>날짜</label>
-            <select className="input" value={slotForm.day} onChange={(e) => setSlotForm({ ...slotForm, day: e.target.value })}>
-              <option value="all">모든 날짜</option>{config.days.map((d) => <option key={d.id} value={d.id}>{shortDate(d.date)}</option>)}</select></div>
-          <div className="field"><label>시각</label><input className="input" type="time" value={slotForm.time} onChange={(e) => setSlotForm({ ...slotForm, time: e.target.value })} /></div>
-          <button className="btn" disabled={!slotForm.time} onClick={() => run(async () => {
-            const days = slotForm.day === 'all' ? config.days.map((d) => d.id) : [slotForm.day];
-            for (const day_id of days) await api('/slots', { body: { station_id: slotForm.station, day_id, time: slotForm.time } });
-          }, '시점을 추가했습니다.')}>추가</button>
         </div>
       </div>
 
