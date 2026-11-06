@@ -4,7 +4,7 @@ import {
   COOKIE, HttpError, TIME_RE, cookieHeader, int, loadConfig, log, requireAdmin, requireAuth, route, routes, slotKey, str,
   type ApiRequest, type ApiResponse,
 } from './core.js';
-import { resyncAllEntries, rosterActive, tallyExtras } from './roster.js';
+import { invalidatePlaces, resyncAllEntries, rosterActive, tallyExtras } from './roster.js';
 import type {
   AuditLog, ChangeRequest, Db, District, Election, ElectionDay, Entry, Member, Slot, Station,
 } from './db/types.js';
@@ -267,6 +267,7 @@ route('PUT', '/districts/:id', async (ctx) => {
     patch.base_voters = int(ctx.req.body.base_voters, '유권자수');
   }
   await ctx.db.update('district', { id: d.id }, patch);
+  invalidatePlaces();
   if (patch.base_voters !== undefined && patch.base_voters !== d.base_voters) {
     await log(ctx.db, me, 'voters.update', { before_json: JSON.stringify({ name: d.name, base_voters: d.base_voters }), after_json: JSON.stringify({ name: patch.name ?? d.name, base_voters: patch.base_voters }) });
   }
@@ -285,6 +286,7 @@ route('PUT', '/stations/:id', async (ctx) => {
   const next = { ...s, ...patch };
   if (next.open_time >= next.close_time) throw new HttpError(400, 'bad_request', '종료 시각은 시작 시각보다 늦어야 합니다.');
   await ctx.db.update('station', { id: s.id }, patch);
+  invalidatePlaces();
   if (patch.open_time || patch.close_time) await regenerateSlotsForStation(ctx.db, next, await currentTallyTimes(ctx.db));
   await log(ctx.db, me, 'station.update', { station_id: s.id, before_json: JSON.stringify(s), after_json: JSON.stringify(next) });
   return { station: next };

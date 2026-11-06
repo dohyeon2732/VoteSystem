@@ -67,28 +67,57 @@ async function activeShift(db: Db, memberId: string, now = Date.now()): Promise<
   return shifts.find((s) => now >= slotEpoch(s.date, s.start_time) - SHIFT_GRACE_MS && now <= slotEpoch(s.date, s.end_time) + SHIFT_GRACE_MS) ?? null;
 }
 
+/**
+ * 투표소·선거구는 선거 중 거의 바뀌지 않으므로 서버 인스턴스 메모리에 60초 보관한다.
+ * 조회 한 번에 DB 왕복을 줄이기 위함 (이름을 바꾸면 같은 인스턴스는 즉시, 다른 인스턴스는 60초 안에 반영).
+ */
+const PLACE_TTL_MS = 60_000;
+let placeCache: { at: number; stations: Station[]; districts: District[] } | null = null;
+async function places(db: Db) {
+  if (placeCache && Date.now() - placeCache.at < PLACE_TTL_MS) return placeCache;
+  const [stations, districts] = await Promise.all([db.all<Station>('station', undefined, 'sort'), db.all<District>('district', undefined, 'sort')]);
+  placeCache = { at: Date.now(), stations, districts };
+  return placeCache;
+}
+export function invalidatePlaces() { placeCache = null; }
+
+function checkGate(me: Member, el: Election, needReady?: boolean) {
+  if (el.purged_at) throw new HttpError(410, 'purged', '선거인명부가 파기되었습니다.');
+  if (!me.pledged_at) throw new HttpError(403, 'pledge_required', '개인정보 취급 서약에 먼저 동의해야 합니다.');
+  if (needReady && el.roster_upload) throw new HttpError(503, 'uploading', '선거인명부 업로드가 진행 중입니다. 끝난 뒤 다시 시도하세요.');
+}
+
 /** 명부 기능 공통 검사: 서약, 파기 여부, 업로드 진행 여부. */
 async function rosterGate(ctx: Ctx, opts: { needReady?: boolean } = {}) {
   const me = requireAuth(ctx);
   const el = await election(ctx.db);
-  if (el.purged_at) throw new HttpError(410, 'purged', '선거인명부가 파기되었습니다.');
-  if (!me.pledged_at) throw new HttpError(403, 'pledge_required', '개인정보 취급 서약에 먼저 동의해야 합니다.');
-  if (opts.needReady) {
-    if (el.roster_upload) throw new HttpError(503, 'uploading', '선거인명부 업로드가 진행 중입니다. 끝난 뒤 다시 시도하세요.');
-    if (!(await rosterActive(ctx.db))) throw new HttpError(409, 'no_roster', '선거인명부가 등록되지 않았습니다.');
-  }
+  checkGate(me, el, opts.needReady);
   return { me, el };
+}
+
+/** 검사 + 근무 투표소 확인을 DB 왕복 한 번(병렬)으로 끝낸다. 학번 조회·불출처럼 자주 부르는 곳에서 쓴다. */
+async function gateAt(ctx: Ctx, stationId: unknown, opts: { needReady?: boolean } = {}) {
+  const me = requireAuth(ctx);
+  const [el, pl, shift] = await Promise.all([
+    election(ctx.db), places(ctx.db), me.role === 'admin' ? Promise.resolve(null) : activeShift(ctx.db, me.id),
+  ]);
+  checkGate(me, el, opts.needReady);
+  const { station } = await resolveStation(ctx, me, stationId, pl.stations, shift);
+  return { me, el, station, shift, pl };
 }
 
 /** 위원은 근무 중인 투표소만, 총관리자는 지정한 투표소. */
 async function stationFor(ctx: Ctx, me: Member, stationId: unknown): Promise<{ station: Station; shift: Shift | null }> {
-  const stations = await ctx.db.all<Station>('station');
+  const [pl, shift] = await Promise.all([places(ctx.db), me.role === 'admin' ? Promise.resolve(null) : activeShift(ctx.db, me.id)]);
+  return resolveStation(ctx, me, stationId, pl.stations, shift);
+}
+
+async function resolveStation(ctx: Ctx, me: Member, stationId: unknown, stations: Station[], shift: Shift | null): Promise<{ station: Station; shift: Shift | null }> {
   if (me.role === 'admin') {
     const station = stations.find((s) => s.id === stationId);
     if (!station) throw new HttpError(400, 'station_required', '투표소를 선택하세요.');
     return { station, shift: null };
   }
-  const shift = await activeShift(ctx.db, me.id);
   if (!shift) {
     await accessLog(ctx.db, me, typeof stationId === 'string' ? stationId : null, 'denied', null, 'no_shift');
     throw new HttpError(403, 'no_shift', '지금은 근무 시간이 아닙니다. 근무표를 확인하세요.');
@@ -233,46 +262,56 @@ route('POST', '/roster/pledge', async (ctx) => {
 
 // ---------- 학번 조회·불출 (15.3) ----------
 route('POST', '/roster/lookup', async (ctx) => {
-  const { me } = await rosterGate(ctx, { needReady: true });
-  const { station } = await stationFor(ctx, me, ctx.req.body?.station_id);
+  // DB 왕복 2번: ①권한 검사(설정·근무표)와 선거인 1행을 동시에 ②접근 로그. 투표소·선거구 이름은 메모리 캐시에서.
+  // 선거인 행은 미리 읽지만 권한 검사를 통과해야만 응답에 쓰인다.
+  const me = requireAuth(ctx);
   const sid = normalizeSid(ctx.req.body?.sid);
   if (sid.length < 4 || sid.length > 20) throw new HttpError(400, 'bad_sid', '학번을 확인하세요.');
+  const h = hashSid(sid);
+  const [{ station, pl }, v] = await Promise.all([
+    gateAt(ctx, ctx.req.body?.station_id, { needReady: true }),
+    ctx.db.get<Voter>('voter', { sid_hash: h, batch_id: null }),
+  ]);
   if (!rateLimit(me.id)) {
     await accessLog(ctx.db, me, station.id, 'lookup', null, 'rate_limited');
     throw new HttpError(429, 'rate_limited', '조회가 너무 잦습니다. 1분 뒤 다시 시도하세요.');
   }
-  const h = hashSid(sid);
-  const v = await ctx.db.get<Voter>('voter', { sid_hash: h, batch_id: null });
+  let out: Record<string, unknown>;
+  let result: string;
   if (!v) {
-    await accessLog(ctx.db, me, station.id, 'lookup', h, 'not_found');
-    return { result: 'not_found' };
+    result = 'not_found'; out = { result };
+  } else if (v.district_id !== station.district_id) {
+    result = 'other_district';
+    out = {
+      result, district_name: pl.districts.find((d) => d.id === v.district_id)?.name ?? '',
+      station_names: pl.stations.filter((s) => s.district_id === v.district_id).map((s) => s.name),
+    };
+  } else if (v.voted_at) {
+    result = 'voted';
+    out = { result, ...voterView(v), voted_at: v.voted_at, voted_station_name: pl.stations.find((s) => s.id === v.voted_station_id)?.name ?? '' };
+  } else {
+    result = 'ok'; out = { result, ...voterView(v) };
   }
-  if (v.district_id !== station.district_id) {
-    const [district, stations] = await Promise.all([ctx.db.get<District>('district', { id: v.district_id }), ctx.db.all<Station>('station', { district_id: v.district_id }, 'sort')]);
-    await accessLog(ctx.db, me, station.id, 'lookup', h, 'other_district');
-    return { result: 'other_district', district_name: district?.name ?? '', station_names: stations.map((s) => s.name) };
-  }
-  if (v.voted_at) {
-    const at = await ctx.db.get<Station>('station', { id: v.voted_station_id ?? '' });
-    await accessLog(ctx.db, me, station.id, 'lookup', h, 'voted');
-    return { result: 'voted', ...voterView(v), voted_at: v.voted_at, voted_station_name: at?.name ?? '' };
-  }
-  await accessLog(ctx.db, me, station.id, 'lookup', h, 'ok');
-  return { result: 'ok', ...voterView(v) };
+  await accessLog(ctx.db, me, station.id, 'lookup', h, result);
+  return out;
 });
 
 route('POST', '/roster/issue', async (ctx) => {
-  const { me } = await rosterGate(ctx, { needReady: true });
-  const { station } = await stationFor(ctx, me, ctx.req.body?.station_id);
+  requireAuth(ctx);
   if (ctx.req.body?.id_checked !== true) throw new HttpError(400, 'id_check', '신분증 확인을 먼저 체크하세요.');
   const voterId = str(ctx.req.body?.voter_id, '선거인');
-  const v = await ctx.db.get<Voter>('voter', { id: voterId, batch_id: null });
+  const missedId = ctx.req.body?.missed_window_id ? String(ctx.req.body.missed_window_id) : null;
+  // 검사·선거인·대조 구간을 한 번에 병렬로 읽는다
+  const [{ me, station, pl }, v, w] = await Promise.all([
+    gateAt(ctx, ctx.req.body?.station_id, { needReady: true }),
+    ctx.db.get<Voter>('voter', { id: voterId, batch_id: null }),
+    missedId ? ctx.db.get<TallyWindow>('tally_window', { id: missedId }) : Promise.resolve(null),
+  ]);
   if (!v) throw new HttpError(404, 'not_found', '선거인을 찾을 수 없습니다.');
   if (v.district_id !== station.district_id) throw new HttpError(403, 'other_district', '이 투표소 선거구의 선거인이 아닙니다.');
   let windowId: string | null = null;
   let source: BallotSource = 'live';
-  if (ctx.req.body?.missed_window_id) {
-    const w = await ctx.db.get<TallyWindow>('tally_window', { id: String(ctx.req.body.missed_window_id) });
+  if (missedId) {
     if (!w || w.station_id !== station.id || w.status !== 'reconciling') throw new HttpError(409, 'window_closed', '대조 중인 구간이 아닙니다.');
     windowId = w.id; source = 'missed';
   }
@@ -282,12 +321,14 @@ route('POST', '/roster/issue', async (ctx) => {
     actor_id: me.id, actor_name: me.name, source, window_id: windowId, reason: source === 'missed' ? '대조 중 누락분 추가' : null,
   });
   if (!r.ok) {
-    const at = await ctx.db.get<Station>('station', { id: r.voted_station_id ?? '' });
     await accessLog(ctx.db, me, station.id, 'issue', v.sid_hash, 'already_voted');
-    throw new HttpError(409, 'already_voted', '이미 투표한 선거인입니다.', { voted_at: r.voted_at, voted_station_name: at?.name ?? '' });
+    throw new HttpError(409, 'already_voted', '이미 투표한 선거인입니다.', { voted_at: r.voted_at, voted_station_name: pl.stations.find((s) => s.id === r.voted_station_id)?.name ?? '' });
   }
-  await accessLog(ctx.db, me, station.id, 'issue', v.sid_hash, source === 'missed' ? 'missed' : 'ok');
-  const live = (await ctx.db.votes.liveCounts()).find((x) => x.station_id === station.id);
+  const [, counts] = await Promise.all([
+    accessLog(ctx.db, me, station.id, 'issue', v.sid_hash, source === 'missed' ? 'missed' : 'ok'),
+    ctx.db.votes.liveCounts(),
+  ]);
+  const live = counts.find((x) => x.station_id === station.id);
   return { ok: true, event_id: eventId, is_leave: r.is_leave, open_count: Number(live?.open_net ?? 0) };
 });
 
@@ -331,8 +372,7 @@ route('POST', '/roster/cancel-by-sid', async (ctx) => {
 
 // ---------- 투표소 상태·꼬리표 마감 (15.4) ----------
 route('GET', '/roster/station', async (ctx) => {
-  const { me } = await rosterGate(ctx);
-  const { station, shift } = await stationFor(ctx, me, ctx.req.query.station_id);
+  const { me, station, shift } = await gateAt(ctx, ctx.req.query.station_id);
   const [live, wins, recent] = await Promise.all([
     ctx.db.votes.liveCounts(),
     ctx.db.all<TallyWindow>('tally_window', { station_id: station.id }, 'boundary_at desc'),

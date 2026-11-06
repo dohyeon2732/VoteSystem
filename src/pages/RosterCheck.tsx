@@ -26,6 +26,7 @@ export default function RosterCheck() {
   const [tags, setTags] = useState('');
   const [mismatch, setMismatch] = useState<string | null>(null);
   const [missedMode, setMissedMode] = useState(false);
+  const [elapsed, setElapsed] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const isAdmin = me?.role === 'admin';
   const stationId = isAdmin ? adminStation : rm?.shift?.station_id ?? '';
@@ -66,8 +67,10 @@ export default function RosterCheck() {
     const q = sid.replace(/[^0-9]/g, '');
     if (!q) return;
     setBusy(true); setErr(null); setDone(null); setIdChecked(false);
+    const t0 = performance.now();
     try {
       const r = await api<LookupResult>('/roster/lookup', { body: { sid: q, station_id: stationId } });
+      setElapsed(performance.now() - t0);
       setResult({ ...r, sid: q });
       setSid((cur) => (cur.replace(/[^0-9]/g, '') === q ? '' : cur));
     } catch (e2) { setErr((e2 as Error).message); setResult(null); } finally { setBusy(false); }
@@ -182,6 +185,7 @@ export default function RosterCheck() {
             />
             <button className="btn primary" disabled={busy || sid.length < 4} style={{ minWidth: 80 }}>조회</button>
           </form>
+          {elapsed !== null && result && <div className="small muted" style={{ marginTop: -6 }}>응답 {(elapsed / 1000).toFixed(2)}초</div>}
 
           {done && (
             <div className="alert good" role="status" style={{ fontSize: 17 }}>

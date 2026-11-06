@@ -79,7 +79,13 @@ export async function regenerateSlotsForStation(db: Db, station: Station, tallyT
 }
 
 export async function ensureSeed(db: Db): Promise<void> {
-  const election = await db.get<Election>('election', { id: 'main' });
+  // 서버가 새로 뜰 때마다 한 번 실행되므로, 확인용 읽기는 병렬로 한 번에 한다
+  const [election, days, districts, admins] = await Promise.all([
+    db.get<Election>('election', { id: 'main' }),
+    db.all<ElectionDay>('election_day'),
+    db.all<District>('district'),
+    db.all<Member>('member', { role: 'admin' }),
+  ]);
   if (!election) {
     await db.insert<Election>('election', {
       id: 'main',
@@ -95,13 +101,11 @@ export async function ensureSeed(db: Db): Promise<void> {
       last_backup_at: null,
     });
   }
-  const days = await db.all<ElectionDay>('election_day');
   if (days.length === 0) {
     for (const [i, d] of DAYS.entries()) {
       await db.insert<ElectionDay>('election_day', { id: `day-${d.date}`, date: d.date, is_extension: d.ext, sort: i });
     }
   }
-  const districts = await db.all<District>('district');
   if (districts.length === 0) {
     let stationSort = 0;
     for (const [i, d] of DISTRICTS.entries()) {
@@ -117,7 +121,6 @@ export async function ensureSeed(db: Db): Promise<void> {
       }
     }
   }
-  const admins = await db.all<Member>('member', { role: 'admin' });
   if (admins.length === 0) {
     const name = process.env.ADMIN_NAME ?? '관리자';
     const code = process.env.ADMIN_CODE ?? 'ADMIN123';

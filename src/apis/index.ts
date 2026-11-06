@@ -1,3 +1,5 @@
+import { isSilent, trackEnd, trackStart } from '../app/loading';
+
 export interface Election {
   id: string; name: string; threshold_pct: number; extension_enabled: boolean; input_locked: boolean; enforce_time_window: boolean;
   result_announced_on: string | null; retention_days: number; purged_at: string | null;
@@ -83,7 +85,18 @@ export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public extra?: any) { super(message); }
 }
 
-export async function api<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+export async function api<T>(path: string, init?: { method?: string; body?: unknown; silent?: boolean }): Promise<T> {
+  // 화면 가운데 로딩 표시 (배경 자동 갱신은 runSilently로 제외)
+  const silent = init?.silent || isSilent();
+  if (!silent) trackStart();
+  try {
+    return await request<T>(path, init);
+  } finally {
+    if (!silent) trackEnd();
+  }
+}
+
+async function request<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
   const res = await fetch('/api' + path, {
     method: init?.method ?? (init?.body !== undefined ? 'POST' : 'GET'),
     headers: init?.body !== undefined ? { 'content-type': 'application/json' } : undefined,
