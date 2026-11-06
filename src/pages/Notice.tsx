@@ -56,14 +56,18 @@ export default function Notice() {
   };
 
   if (!config || !tally || !current || !point) return <main className="narrow"><p className="muted center">불러오는 중…</p></main>;
+  // 명세 15.6: 명부 운영 중에는 한 투표소라도 대조 미완료인 시점은 공지를 만들지 않는다
+  const blocked = tally.roster?.roster_active && current.total.missing > 0;
 
   return (
     <main className="narrow stack">
       <div className="card stack">
         <h1>공지 생성</h1>
         <PointPicker config={config} value={point} onChange={setPoint} following={following} isLive={isLive} onResetToLive={resetToLive} />
-        {current.total.missing > 0 && <div className="alert warn">{current.total.missing}개 투표소가 이 시점에 미입력입니다. 직전 값을 이어서 계산한 수치입니다.</div>}
+        {blocked && <div className="alert danger">{current.total.missing}개 투표소가 이 시점의 꼬리표 대조를 마치지 않아 공지 문구·이미지를 만들 수 없습니다. 공지는 대조를 마친 값으로만 냅니다.</div>}
+        {!blocked && current.total.missing > 0 && <div className="alert warn">{current.total.missing}개 투표소가 이 시점에 미입력입니다. 직전 값을 이어서 계산한 수치입니다.</div>}
       </div>
+      {!blocked && <>
       <div className="card stack">
         <div className="row between">
           <h2>공지 문구</h2>
@@ -100,6 +104,7 @@ export default function Notice() {
           </>
         )}
       </div>
+      </>}
       <div className="card stack">
         <h2>CSV 내보내기</h2>
         <p className="muted small">투표소 × 시점 누적값, 휴학생 수, 증가분, 투표율, 입력자, 확정 여부. 엑셀에서 바로 열립니다.</p>

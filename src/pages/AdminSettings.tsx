@@ -68,7 +68,9 @@ export default function AdminSettings() {
 
       <div className="card stack">
         <h1>선거구 기본 유권자수</h1>
-        <p className="muted small">휴학생 제외 재학생 유권자 수. 선거 중 수정하면 모든 시점의 투표율이 즉시 재계산됩니다.</p>
+        {config.roster_active
+          ? <div className="alert info small">선거인명부가 등록되어 기본 유권자수 = 선거구 정회원 수로 자동 계산됩니다. 고치려면 선거인명부 화면에서 정정하세요.</div>
+          : <p className="muted small">휴학생 제외 재학생 유권자 수. 선거 중 수정하면 모든 시점의 투표율이 즉시 재계산됩니다. 선거인명부를 올리면 자동 계산으로 바뀝니다.</p>}
         <div className="table-wrap">
           <table>
             <thead><tr><th>선거구</th><th className="num">현재</th><th>새 값</th><th style={{ width: '1%' }}></th></tr></thead>
@@ -77,8 +79,8 @@ export default function AdminSettings() {
                 <tr key={d.id}>
                   <td style={{ fontWeight: 600 }}>{d.name}</td>
                   <td className="num">{fmtNum(d.base_voters)}</td>
-                  <td><input className="input" style={{ width: 140 }} inputMode="numeric" value={voters[d.id] ?? ''} onChange={(e) => setVoters({ ...voters, [d.id]: e.target.value.replace(/[^0-9]/g, '') })} /></td>
-                  <td><button className="btn sm" disabled={String(d.base_voters) === (voters[d.id] ?? '')} onClick={() => run(() => api(`/districts/${d.id}`, { method: 'PUT', body: { base_voters: Number(voters[d.id] || 0) } }), `${d.name} 유권자수를 저장했습니다.`)}>저장</button></td>
+                  <td><input className="input" style={{ width: 140 }} inputMode="numeric" disabled={config.roster_active} value={voters[d.id] ?? ''} onChange={(e) => setVoters({ ...voters, [d.id]: e.target.value.replace(/[^0-9]/g, '') })} /></td>
+                  <td><button className="btn sm" disabled={config.roster_active || String(d.base_voters) === (voters[d.id] ?? '')} onClick={() => run(() => api(`/districts/${d.id}`, { method: 'PUT', body: { base_voters: Number(voters[d.id] || 0) } }), `${d.name} 유권자수를 저장했습니다.`)}>저장</button></td>
                 </tr>
               ))}
             </tbody>
@@ -141,7 +143,7 @@ export default function AdminSettings() {
 
       <div className="card stack">
         <h1 style={{ color: 'var(--danger)' }}>전체 입력 초기화 (테스트 모드)</h1>
-        <p className="muted small">리허설 후 모든 입력값·수정요청·변경 로그를 지웁니다. 설정, 명부, 유권자수는 유지됩니다. 되돌릴 수 없습니다.</p>
+        <p className="muted small">리허설 후 모든 입력값·수정요청·변경 로그를 지웁니다. 설정, 위원 명부, 유권자수는 유지됩니다. 선거인명부·체크·마감 기록은 건드리지 않으며, 대조 결과로 생기는 입력값은 다시 채워집니다 (체크 기록은 선거인명부 화면에서 따로 초기화). 되돌릴 수 없습니다.</p>
         <div className="row">
           <input className="input" style={{ maxWidth: 220 }} placeholder="초기화 라고 입력" value={resetText} onChange={(e) => setResetText(e.target.value)} />
           <button className="btn danger" disabled={busy || resetText.normalize('NFC').trim() !== '초기화'} onClick={() => run(() => api('/reset', { body: { confirm: '초기화' } }).then(() => setResetText('')), '모든 입력을 초기화했습니다.')}>초기화 실행</button>

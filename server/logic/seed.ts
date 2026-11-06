@@ -88,6 +88,11 @@ export async function ensureSeed(db: Db): Promise<void> {
       extension_enabled: false,
       input_locked: false,
       enforce_time_window: true,
+      result_announced_on: null,
+      retention_days: 7,
+      purged_at: null,
+      roster_upload: null,
+      last_backup_at: null,
     });
   }
   const days = await db.all<ElectionDay>('election_day');

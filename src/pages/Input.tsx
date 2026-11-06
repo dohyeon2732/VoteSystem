@@ -46,6 +46,7 @@ export default function Input() {
           <span className="pill accent">{entered} / {applicable} 투표소 입력됨</span>
         </div>
         <PointPicker config={config} value={point} onChange={setPoint} following={following} isLive={isLive} onResetToLive={resetToLive} />
+        {config.roster_active && <div className="alert warn">비상 손 입력 · 선거인명부 체크로 자동 집계 중입니다. 시스템 장애로 대조가 불가능할 때만 쓰고, 입력값은 로그에 남습니다.</div>}
         {locked && <div className="alert danger">총관리자가 입력을 잠갔습니다. 지금은 입력할 수 없습니다.</div>}
         {config.election.enforce_time_window && Date.now() < slotEpoch(point.date, point.time) - 10 * 60 * 1000 && (
           <div className="alert warn">이 시점은 집계 시각 10분 전부터 입력할 수 있습니다.</div>

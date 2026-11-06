@@ -35,6 +35,7 @@ export default function AdminMembers() {
         </select>
       </td>
       <td className="small muted">{m.last_login_at ? fmtTime(m.last_login_at) : '-'}</td>
+      <td className="small">{m.pledged_at ? <span className="muted">{fmtTime(m.pledged_at)}</span> : <span className="pill warn">미서약</span>}</td>
       <td>{m.active ? <span className="pill good">활성</span> : <span className="pill muted">비활성</span>}</td>
       <td><span className="actions">
         {m.active ? (
@@ -48,7 +49,7 @@ export default function AdminMembers() {
       </span></td>
     </tr>
   );
-  const head = <thead><tr><th>이름</th><th>권한</th><th>최근 로그인</th><th>상태</th><th></th></tr></thead>;
+  const head = <thead><tr><th>이름</th><th>권한</th><th>최근 로그인</th><th>개인정보 서약</th><th>상태</th><th></th></tr></thead>;
   return (
     <main className="stack" style={{ maxWidth: 860 }}>
       {msg && <div className="alert danger">{msg}</div>}
@@ -67,7 +68,7 @@ export default function AdminMembers() {
 
       <div className="card">
         <div className="row between" style={{ marginBottom: 8 }}>
-          <h1>관리자 명부</h1>
+          <h1>위원 명부</h1>
           <span className="pill accent">활성 {active.length}명</span>
         </div>
         <div className="table-wrap">
@@ -75,7 +76,7 @@ export default function AdminMembers() {
             {head}
             <tbody>
               {active.map(renderRow)}
-              {active.length === 0 && <tr><td colSpan={5} className="muted center">활성 위원이 없습니다.</td></tr>}
+              {active.length === 0 && <tr><td colSpan={6} className="muted center">활성 위원이 없습니다.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -92,7 +93,7 @@ export default function AdminMembers() {
               {head}
               <tbody>
                 {inactive.map(renderRow)}
-                {inactive.length === 0 && <tr><td colSpan={5} className="muted center">비활성 위원이 없습니다.</td></tr>}
+                {inactive.length === 0 && <tr><td colSpan={6} className="muted center">비활성 위원이 없습니다.</td></tr>}
               </tbody>
             </table>
           </div>

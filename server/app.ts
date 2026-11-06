@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from './db/index.js';
+import {
+  COOKIE, HttpError, TIME_RE, cookieHeader, int, loadConfig, log, requireAdmin, requireAuth, route, routes, slotKey, str,
+  type ApiRequest, type ApiResponse,
+} from './core.js';
+import { resyncAllEntries, rosterActive, tallyExtras } from './roster.js';
 import type {
   AuditLog, ChangeRequest, Db, District, Election, ElectionDay, Entry, Member, Slot, Station,
 } from './db/types.js';
@@ -9,88 +14,6 @@ import {
 import { currentTallyTimes, ensureSeed, regenerateSlots, regenerateSlotsForStation } from './logic/seed.js';
 import { computeTally } from './logic/tally.js';
 import { generateSlotTimes, nowIso, slotEpoch, weekdayKo } from './logic/time.js';
-
-// ---------- Request / response abstraction (shared by Vercel + local dev) ----------
-export interface ApiRequest {
-  method: string;
-  path: string; // without /api prefix, e.g. "/login"
-  query: Record<string, string>;
-  body: any;
-  cookies: Record<string, string>;
-}
-export interface ApiResponse {
-  status: number;
-  body: unknown;
-  headers?: Record<string, string>;
-}
-
-class HttpError extends Error {
-  constructor(public status: number, public code: string, message?: string, public extra?: unknown) {
-    super(message ?? code);
-  }
-}
-
-type Ctx = { db: Db; member: Member | null; req: ApiRequest; params: Record<string, string> };
-type Handler = (ctx: Ctx) => Promise<unknown | ApiResponse>;
-interface Route { method: string; pattern: RegExp; keys: string[]; handler: Handler }
-const routes: Route[] = [];
-
-function route(method: string, path: string, handler: Handler) {
-  const keys: string[] = [];
-  const pattern = new RegExp('^' + path.replace(/:([a-zA-Z_]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
-  routes.push({ method, pattern, keys, handler });
-}
-
-const COOKIE = 'vote_session';
-const isProd = () => !!process.env.VERCEL || process.env.NODE_ENV === 'production';
-function cookieHeader(token: string | null): string {
-  const base = `${COOKIE}=${token ?? ''}; Path=/; HttpOnly; SameSite=Lax${isProd() ? '; Secure' : ''}`;
-  return token ? `${base}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}` : `${base}; Max-Age=0`;
-}
-
-function requireAuth(ctx: Ctx): Member {
-  if (!ctx.member) throw new HttpError(401, 'unauthenticated', '로그인이 필요합니다.');
-  return ctx.member;
-}
-function requireAdmin(ctx: Ctx): Member {
-  const m = requireAuth(ctx);
-  if (m.role !== 'admin') throw new HttpError(403, 'forbidden', '총관리자만 할 수 있습니다.');
-  return m;
-}
-function int(v: unknown, name: string, min = 0): number {
-  const n = typeof v === 'string' ? Number(v) : v;
-  if (typeof n !== 'number' || !Number.isInteger(n) || n < min) throw new HttpError(400, 'bad_request', `${name} 값이 올바르지 않습니다.`);
-  return n;
-}
-function str(v: unknown, name: string, max = 200): string {
-  if (typeof v !== 'string' || v.trim().length === 0 || v.length > max) throw new HttpError(400, 'bad_request', `${name} 값이 올바르지 않습니다.`);
-  return v.trim();
-}
-const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-async function log(db: Db, actor: Member, action: string, fields: Partial<AuditLog> = {}) {
-  await db.insert<AuditLog>('audit_log', {
-    id: randomUUID(), at: nowIso(), actor_id: actor.id, actor_name: actor.name, action,
-    station_id: null, slot_id: null, before_json: null, after_json: null, note: null, ...fields,
-  });
-}
-
-async function loadConfig(db: Db) {
-  const [election, days, districts, stations, slots] = await Promise.all([
-    db.get<Election>('election', { id: 'main' }),
-    db.all<ElectionDay>('election_day', undefined, 'sort'),
-    db.all<District>('district', undefined, 'sort'),
-    db.all<Station>('station', undefined, 'sort'),
-    db.all<Slot>('slot'),
-  ]);
-  if (!election) throw new HttpError(500, 'no_election');
-  return { election, days, districts, stations, slots };
-}
-
-function slotKey(slot: Slot, days: ElectionDay[]) {
-  const day = days.find((d) => d.id === slot.day_id)!;
-  return { date: day.date, time: slot.time, epoch: slotEpoch(day.date, slot.time), isExtension: day.is_extension };
-}
 
 // ---------- Auth ----------
 route('POST', '/login', async ({ db, req }) => {
@@ -123,14 +46,14 @@ route('POST', '/logout', async () => ({ status: 200, body: { ok: true }, headers
 
 route('GET', '/me', async (ctx) => {
   const m = requireAuth(ctx);
-  return { id: m.id, name: m.name, role: m.role };
+  return { id: m.id, name: m.name, role: m.role, pledged_at: m.pledged_at ?? null };
 });
 
 // ---------- Config ----------
 route('GET', '/config', async (ctx) => {
   requireAuth(ctx);
   const cfg = await loadConfig(ctx.db);
-  return { ...cfg, server_now: nowIso() };
+  return { ...cfg, roster_active: await rosterActive(ctx.db), server_now: nowIso() };
 });
 
 // ---------- Tally ----------
@@ -140,7 +63,8 @@ route('GET', '/tally', async (ctx) => {
   const entries = await ctx.db.all<Entry>('entry');
   const points = computeTally({ ...cfg, entries, extensionEnabled: cfg.election.extension_enabled });
   const pending = ctx.member!.role === 'admin' ? (await ctx.db.all<ChangeRequest>('change_request', { status: 'pending' })).length : 0;
-  return { election: cfg.election, points, pending_requests: pending, server_now: nowIso() };
+  const roster = await tallyExtras(ctx.db, cfg.days, cfg.stations, cfg.election.extension_enabled);
+  return { election: cfg.election, points, pending_requests: pending, roster, server_now: nowIso() };
 });
 
 // ---------- Entries ----------
@@ -153,6 +77,7 @@ route('GET', '/entries', async (ctx) => {
 route('POST', '/entries', async (ctx) => {
   const me = requireAuth(ctx);
   const { db, req } = ctx;
+  if (me.role !== 'admin' && (await rosterActive(db))) throw new HttpError(403, 'roster_mode', '선거인명부 체크로 자동 집계합니다. 손 입력은 총관리자 비상용입니다.');
   const cfg = await loadConfig(db);
   const stationId = str(req.body?.station_id, '투표소');
   const slotId = str(req.body?.slot_id, '시점');
@@ -223,6 +148,13 @@ route('POST', '/slots/confirm', async (ctx) => {
   const day = cfg.days.find((d) => d.date === date);
   if (!day) throw new HttpError(404, 'not_found');
   const slotIds = cfg.slots.filter((s) => s.day_id === day.id && s.time === time).map((s) => s.id);
+  if (confirmed && (await rosterActive(ctx.db))) {
+    // 명세 15.6: 한 투표소라도 대조 미완료면 그 시점은 확정할 수 없다
+    const entries = await ctx.db.allIn<Entry>('entry', 'slot_id', slotIds);
+    const missing = cfg.slots.filter((s) => slotIds.includes(s.id) && !entries.some((e) => e.slot_id === s.id))
+      .map((s) => cfg.stations.find((st) => st.id === s.station_id)?.name ?? '');
+    if (missing.length) throw new HttpError(409, 'not_reconciled', `꼬리표 대조가 끝나지 않은 투표소가 있어 확정할 수 없습니다: ${missing.join(', ')}`);
+  }
   let n = 0;
   for (const slotId of slotIds) {
     const entry = await ctx.db.get<Entry>('entry', { slot_id: slotId });
@@ -330,7 +262,10 @@ route('PUT', '/districts/:id', async (ctx) => {
   if (!d) throw new HttpError(404, 'not_found');
   const patch: Partial<District> = {};
   if (ctx.req.body?.name !== undefined) patch.name = str(ctx.req.body.name, '이름', 50);
-  if (ctx.req.body?.base_voters !== undefined) patch.base_voters = int(ctx.req.body.base_voters, '유권자수');
+  if (ctx.req.body?.base_voters !== undefined) {
+    if (await rosterActive(ctx.db)) throw new HttpError(409, 'roster_mode', '선거인명부가 등록되어 기본 유권자수는 정회원 수로 자동 계산됩니다.');
+    patch.base_voters = int(ctx.req.body.base_voters, '유권자수');
+  }
   await ctx.db.update('district', { id: d.id }, patch);
   if (patch.base_voters !== undefined && patch.base_voters !== d.base_voters) {
     await log(ctx.db, me, 'voters.update', { before_json: JSON.stringify({ name: d.name, base_voters: d.base_voters }), after_json: JSON.stringify({ name: patch.name ?? d.name, base_voters: patch.base_voters }) });
@@ -460,7 +395,9 @@ route('POST', '/reset', async (ctx) => {
   const me = requireAdmin(ctx);
   if (String(ctx.req.body?.confirm ?? '').normalize('NFC').trim() !== '초기화') throw new HttpError(400, 'bad_request', '확인 문구가 맞지 않습니다.');
   for (const t of ['change_request', 'entry', 'audit_log']) await ctx.db.removeAll(t);
-  await log(ctx.db, me, 'system.reset', { note: '전체 입력 초기화' });
+  await log(ctx.db, me, 'system.reset', { note: '전체 입력 초기화 (선거인명부·체크 기록은 유지)' });
+  // 명세 FR-72: 명부·체크·마감은 건드리지 않으므로, 대조 결과로 생기는 입력값은 다시 채운다
+  if (await rosterActive(ctx.db)) await resyncAllEntries(ctx.db, me);
   return { ok: true };
 });
 
@@ -563,6 +500,8 @@ export async function handle(req: ApiRequest): Promise<ApiResponse> {
     return { status: 404, body: { error: 'not_found', message: '없는 API입니다.' } };
   } catch (e) {
     if (e instanceof HttpError) return { status: e.status, body: { error: e.code, message: e.message, ...(e.extra ? { extra: e.extra } : {}) } };
+    const ex = e as { status?: unknown; code?: unknown; message?: string };
+    if (typeof ex.status === 'number' && typeof ex.code === 'string') return { status: ex.status, body: { error: ex.code, message: ex.message } };
     console.error(e);
     return { status: 500, body: { error: 'internal', message: (e as Error).message } };
   }

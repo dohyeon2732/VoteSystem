@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, useReducedMotion } from 'motion/react';
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { api, fmtNum, fmtPct, fmtTime, pointLabel, remainingToThreshold, shortDate, type Tally, type TallyPoint } from '../apis';
+import { api, fmtHM, fmtNum, fmtPct, fmtTime, pointLabel, remainingToThreshold, shortDate, type Tally, type TallyPoint } from '../apis';
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
 import PointPicker, { type Point } from '../components/PointPicker';
@@ -46,6 +46,11 @@ export default function Dashboard() {
   const rankOf = new Map(ranked.map((d, i) => [d.district_id, i + 1]));
   const series = tally.points.map((p) => ({ label: pointLabel(p), pct: p.total.pct, cumulative: p.total.cumulative }));
   const spring = { type: 'spring', bounce: 0, duration: 0.5 } as const;
+  const roster = tally.roster?.roster_active ? tally.roster : null;
+  const missLabel = roster ? '대조 미완료' : '미입력';
+  const liveTotal = roster ? roster.stations.reduce((a, s) => a + s.live, 0) : 0;
+  const recTotal = roster ? roster.stations.reduce((a, s) => a + s.reconciled, 0) : 0;
+  const warnings = roster ? roster.stations.filter((s) => s.warning || s.reconciling) : [];
 
   return (
     <main className="stack">
@@ -59,12 +64,35 @@ export default function Dashboard() {
             {me?.role === 'admin' && tally.pending_requests > 0 && (
               <Link to="/admin/confirm" className="pill danger">승인 대기 {tally.pending_requests}건</Link>
             )}
-            {t.missing > 0 && <span className="pill warn">{t.missing}개 투표소 미입력</span>}
+            {t.missing > 0 && <span className="pill warn">{t.missing}개 투표소 {missLabel}</span>}
             {isFinal && <span className="pill accent">최종 시점</span>}
           </div>
         </div>
         <PointPicker config={config} value={point} onChange={setPoint} following={following} isLive={isLive} onResetToLive={resetToLive} />
       </div>
+
+      {roster && (
+        <div className="card stack">
+          <div className="row between">
+            <h2>선거인명부 체크</h2>
+            <span className="small muted">공지·투표율은 꼬리표 대조를 마친 값만 씁니다</span>
+          </div>
+          <div className="row" style={{ gap: 24, flexWrap: 'wrap' }}>
+            <div><div className="small muted">실시간 체크 (대조 전 포함)</div><div style={{ fontSize: 28, fontWeight: 800 }}>{fmtNum(liveTotal)}명</div></div>
+            <div><div className="small muted">최근 대조 완료</div><div style={{ fontSize: 28, fontWeight: 800 }}>{fmtNum(recTotal)}명</div></div>
+            <div><div className="small muted">대조 대기</div><div style={{ fontSize: 28, fontWeight: 800, color: liveTotal - recTotal > 0 ? 'var(--warn)' : undefined }}>{fmtNum(liveTotal - recTotal)}명</div></div>
+          </div>
+          {warnings.length > 0 && (
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              {warnings.map((s) => (
+                <span key={s.station_id} className={`pill ${s.warning ? 'danger' : 'warn'}`}>
+                  {config.stations.find((x) => x.id === s.station_id)?.name} · {s.warning ?? '대조 중'}{s.last_boundary_at ? ` (마지막 ${fmtHM(s.last_boundary_at)})` : ''}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid cols-2">
         <div className="card stack">
@@ -75,7 +103,7 @@ export default function Dashboard() {
           <motion.div key={t.pct} className="display" initial={reduce ? false : { opacity: 0.4, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={spring}>
             {fmtPct(t.pct)}
           </motion.div>
-          <div className="muted">{fmtNum(t.cumulative)}명 / {fmtNum(t.voters)}명 (기본 유권자 {fmtNum(t.base_voters)}명 + 휴학생 투표 {fmtNum(t.leave_cumulative)}명)</div>
+          <div className="muted">{fmtNum(t.cumulative)}명 / {fmtNum(t.voters)}명 ({roster ? `재학생 ${fmtNum(t.base_voters)} + 편입 휴학생 ${fmtNum(t.leave_cumulative)}` : `기본 유권자 ${fmtNum(t.base_voters)}명 + 휴학생 투표 ${fmtNum(t.leave_cumulative)}명`})</div>
           <div style={{ paddingTop: 26 }}>
             <div className="gauge" aria-label="전체 투표율 게이지">
               <motion.div className={`fill ${reached ? 'good' : ''}`} initial={false} animate={{ width: `${Math.min(100, t.pct)}%` }} transition={spring} />
@@ -133,7 +161,7 @@ export default function Dashboard() {
                       <td className="num">{d.delta >= 0 ? '+' : ''}{fmtNum(d.delta)}</td>
                       {prevDay && <td className="num muted">{pd ? fmtPct(pd.pct) : '-'}</td>}
                       <td className="small muted">{d.last_entry_by ?? '-'}{d.last_entry_at ? ` · ${fmtTime(d.last_entry_at)}` : ''}</td>
-                      <td>{d.missing > 0 ? <span className="pill danger">미입력 {multi ? d.missing + '곳' : ''}</span> : d.stations.some((s) => s.has_slot) ? (d.stations.filter((s) => s.has_slot).every((s) => s.confirmed) ? <span className="pill good">확정</span> : <span className="pill muted">확정 전</span>) : <span className="pill muted">이어씀</span>}</td>
+                      <td>{d.missing > 0 ? <span className="pill danger">{missLabel} {multi ? d.missing + '곳' : ''}</span> : d.stations.some((s) => s.has_slot) ? (d.stations.filter((s) => s.has_slot).every((s) => s.confirmed) ? <span className="pill good">확정</span> : <span className="pill muted">확정 전</span>) : <span className="pill muted">이어씀</span>}</td>
                     </tr>
                     {multi && open && d.stations.map((s) => {
                       const st = config.stations.find((x) => x.id === s.station_id);
@@ -141,7 +169,7 @@ export default function Dashboard() {
                         <tr className="sub" key={s.station_id}>
                           <td></td><td>└ {st?.name}</td><td className="num muted">-</td><td className="num">{fmtNum(s.cumulative)}</td><td className="num muted">-</td><td className="num muted">-</td>{prevDay && <td></td>}
                           <td className="small muted">{s.last_entry_by ?? '-'}{s.last_entry_at ? ` · ${fmtTime(s.last_entry_at)}` : ''}</td>
-                          <td>{!s.has_slot ? <span className="pill muted">시점 없음</span> : s.entered ? (s.confirmed ? <span className="pill good">확정</span> : <span className="pill muted">확정 전</span>) : <span className="pill danger">미입력</span>}</td>
+                          <td>{!s.has_slot ? <span className="pill muted">시점 없음</span> : s.entered ? (s.confirmed ? <span className="pill good">확정</span> : <span className="pill muted">확정 전</span>) : <span className="pill danger">{missLabel}</span>}</td>
                         </tr>
                       );
                     })}

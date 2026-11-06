@@ -17,14 +17,19 @@ export default function Layout() {
           <div className="brand"><img src="/logo.svg" alt="" className="brand-logo" />{config?.election.name ?? '투표율 집계'}</div>
           <nav className="nav">
             <NavLink to="/dashboard" className={cls}>현황판</NavLink>
-            <NavLink to="/input" className={cls}>입력</NavLink>
+            <NavLink to="/check" className={cls}>명부 확인</NavLink>
+            <NavLink to="/reconcile" className={cls}>대조</NavLink>
+            {(!config?.roster_active || me?.role === 'admin') && <NavLink to="/input" className={cls}>{config?.roster_active ? '비상 입력' : '입력'}</NavLink>}
             {me?.role === 'admin' ? (
               <>
                 <NavLink to="/admin/confirm" className={cls}>확정·승인{pending > 0 && <span className="badge">{pending}</span>}</NavLink>
                 <NavLink to="/notice" className={cls}>공지</NavLink>
+                <NavLink to="/admin/roster" className={cls}>선거인명부</NavLink>
+                <NavLink to="/admin/shifts" className={cls}>근무표</NavLink>
                 <NavLink to="/admin/settings" className={cls}>설정</NavLink>
-                <NavLink to="/admin/members" className={cls}>명부</NavLink>
+                <NavLink to="/admin/members" className={cls}>위원</NavLink>
                 <NavLink to="/log" className={cls}>로그</NavLink>
+                <NavLink to="/admin/access-log" className={cls}>접근 로그</NavLink>
               </>
             ) : (
               <NavLink to="/requests" className={cls}>내 수정요청</NavLink>

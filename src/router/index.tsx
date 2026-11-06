@@ -10,6 +10,11 @@ import AdminSettings from '../pages/AdminSettings';
 import AdminMembers from '../pages/AdminMembers';
 import Log from '../pages/Log';
 import Requests from '../pages/Requests';
+import RosterCheck from '../pages/RosterCheck';
+import AdminRoster from '../pages/AdminRoster';
+import AdminShifts from '../pages/AdminShifts';
+import Reconcile from '../pages/Reconcile';
+import AccessLog from '../pages/AccessLog';
 
 function Guard({ admin, children }: { admin?: boolean; children: JSX.Element }) {
   const { me } = useStore();
@@ -20,13 +25,25 @@ function Guard({ admin, children }: { admin?: boolean; children: JSX.Element }) 
   return children;
 }
 
+/** 명부 운영 중에는 손 입력이 총관리자 비상용 (FR-20 v1.1) */
+function InputGate() {
+  const { me, config } = useStore();
+  if (config?.roster_active && me?.role !== 'admin') return <Navigate to="/check" replace />;
+  return <Input />;
+}
+
 export default function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route element={<Guard><Layout /></Guard>}>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/input" element={<Input />} />
+        <Route path="/input" element={<InputGate />} />
+        <Route path="/check" element={<RosterCheck />} />
+        <Route path="/reconcile" element={<Reconcile />} />
+        <Route path="/admin/roster" element={<Guard admin><AdminRoster /></Guard>} />
+        <Route path="/admin/shifts" element={<Guard admin><AdminShifts /></Guard>} />
+        <Route path="/admin/access-log" element={<Guard admin><AccessLog /></Guard>} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/notice" element={<Guard admin><Notice /></Guard>} />
         <Route path="/requests" element={<Requests />} />
