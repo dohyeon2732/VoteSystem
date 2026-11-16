@@ -12,7 +12,7 @@ import Log from '../pages/Log';
 import Requests from '../pages/Requests';
 import RosterCheck from '../pages/RosterCheck';
 import AdminRoster from '../pages/AdminRoster';
-import AdminShifts from '../pages/AdminShifts';
+import AdminStations from '../pages/AdminStations';
 import Reconcile from '../pages/Reconcile';
 import AccessLog from '../pages/AccessLog';
 
@@ -21,7 +21,14 @@ function Guard({ admin, children }: { admin?: boolean; children: JSX.Element }) 
   const loc = useLocation();
   if (me === undefined) return <main className="narrow"><p className="muted center">불러오는 중…</p></main>;
   if (!me) return <Navigate to="/login" state={{ from: loc.pathname }} replace />;
-  if (admin && me.role !== 'admin') return <Navigate to="/dashboard" replace />;
+  if (admin && me.role !== 'admin') return <Navigate to={me.role === 'station' ? '/check' : '/dashboard'} replace />;
+  return children;
+}
+
+/** 투표소 계정은 명부 확인·자기 대조 기록만 (FR-94c) */
+function PersonOnly({ children }: { children: JSX.Element }) {
+  const { me } = useStore();
+  if (me?.role === 'station') return <Navigate to="/check" replace />;
   return children;
 }
 
@@ -32,21 +39,26 @@ function InputGate() {
   return <Input />;
 }
 
+function Home() {
+  const { me } = useStore();
+  return <Navigate to={me?.role === 'station' ? '/check' : '/dashboard'} replace />;
+}
+
 export default function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route element={<Guard><Layout /></Guard>}>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/input" element={<InputGate />} />
+        <Route path="/" element={<Home />} />
+        <Route path="/input" element={<PersonOnly><InputGate /></PersonOnly>} />
         <Route path="/check" element={<RosterCheck />} />
         <Route path="/reconcile" element={<Reconcile />} />
         <Route path="/admin/roster" element={<Guard admin><AdminRoster /></Guard>} />
-        <Route path="/admin/shifts" element={<Guard admin><AdminShifts /></Guard>} />
+        <Route path="/admin/stations" element={<Guard admin><AdminStations /></Guard>} />
         <Route path="/admin/access-log" element={<Guard admin><AccessLog /></Guard>} />
-        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/dashboard" element={<PersonOnly><Dashboard /></PersonOnly>} />
         <Route path="/notice" element={<Guard admin><Notice /></Guard>} />
-        <Route path="/requests" element={<Requests />} />
+        <Route path="/requests" element={<PersonOnly><Requests /></PersonOnly>} />
         <Route path="/log" element={<Guard admin><Log /></Guard>} />
         <Route path="/admin/confirm" element={<Guard admin><AdminConfirm /></Guard>} />
         <Route path="/admin/settings" element={<Guard admin><AdminSettings /></Guard>} />

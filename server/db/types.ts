@@ -25,9 +25,14 @@ export interface Db {
 export interface IssueInput {
   event_id: string; voter_id: string; sid_hash: string; station_id: string; at: string;
   actor_id: string; actor_name: string; source: BallotSource; window_id: string | null; reason: string | null;
+  /** 투표소 기기의 담당자와 기기 (v1.2). 총관리자는 null */
+  operator_name: string | null; device_id: string | null;
 }
 export type IssueResult = { ok: true; is_leave: boolean } | { ok: false; voted_at: string | null; voted_station_id: string | null };
-export interface CancelInput { cancel_id: string; issue_id: string; at: string; actor_id: string; actor_name: string; reason: string }
+export interface CancelInput {
+  cancel_id: string; issue_id: string; at: string; actor_id: string; actor_name: string; reason: string;
+  operator_name: string | null; device_id: string | null;
+}
 export interface StationCounts { station_id: string; net: number; leave_net: number; open_net: number; open_leave_net: number }
 export interface RosterCount { district_id: string; kind: VoterKind; total: number; voted: number }
 
@@ -77,6 +82,8 @@ export const TABLES = [
   'tally_window',
   'shift',
   'voter_access_log',
+  'device_session',
+  'operator_log',
 ] as const;
 
 // ---- Row types ----
@@ -101,10 +108,13 @@ export interface Station {
   id: string; district_id: string; name: string; sort: number; open_time: string; close_time: string;
 }
 export interface Slot { id: string; station_id: string; day_id: string; time: string; is_close: boolean }
+/** admin = 총관리자, member = 선관위원, station = 투표소 공용 계정 (v1.2) */
+export type Role = 'admin' | 'member' | 'station';
 export interface Member {
-  id: string; name: string; role: 'admin' | 'member'; code_hash: string; code_version: number;
+  id: string; name: string; role: Role; code_hash: string; code_version: number;
   active: boolean; created_at: string; last_login_at: string | null; failed_count: number; locked_until: string | null;
   pledged_at?: string | null; // v1.1 열. 마이그레이션 전 DB에도 위원을 추가할 수 있게 insert에서는 생략
+  station_id?: string | null; // v1.2 열. 투표소 계정만 채움 (insert에서는 투표소 계정일 때만 넣음)
 }
 export interface Entry {
   id: string; station_id: string; slot_id: string; cumulative: number; leave_cumulative: number;
@@ -133,6 +143,7 @@ export interface Voter {
 export interface BallotEvent {
   id: string; voter_id: string; voter_sid_hash: string; station_id: string; kind: 'issue' | 'cancel'; ref_event_id: string | null;
   is_leave: boolean; at: string; actor_id: string; actor_name: string; window_id: string | null; source: BallotSource; reason: string | null;
+  operator_name?: string | null; device_id?: string | null; // v1.2
 }
 export interface TallyWindow {
   id: string; station_id: string; date: string; opened_at: string; boundary_at: string;
@@ -140,9 +151,20 @@ export interface TallyWindow {
   check_count: number; leave_count: number; tag_count: number | null; accepted_count: number | null;
   adjustment: number; adjust_reason: string | null;
   closed_by: string; closed_by_name: string; matched_at: string | null; matched_by_name: string | null;
+  operator_name?: string | null; // v1.2: 마감을 누른 투표소 기기의 담당자
 }
 export interface Shift { id: string; member_id: string; station_id: string; date: string; start_time: string; end_time: string }
 export interface VoterAccessLog {
   id: string; at: string; member_id: string; member_name: string; station_id: string | null;
   action: string; sid_hash8: string | null; result: string | null; note: string | null;
+  operator_name?: string | null; // v1.2
 }
+
+// ---- 투표소 계정 기기 (v1.2) ----
+export interface DeviceSession {
+  id: string; member_id: string; station_id: string; device_no: number;
+  created_at: string; expires_at: string; last_seen_at: string;
+  operator_name: string | null; operator_since: string | null; operator_pledged_at: string | null;
+  revoked_at: string | null; user_agent: string | null;
+}
+export interface OperatorLog { id: string; device_id: string; station_id: string; operator_name: string; started_at: string }

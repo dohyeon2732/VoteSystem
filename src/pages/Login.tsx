@@ -19,7 +19,8 @@ export default function Login() {
     try {
       const me = await api<Me>('/login', { body: { name, code } });
       setMe(me);
-      nav(loc.state?.from ?? '/dashboard', { replace: true });
+      // 투표소 기기는 명부 확인 화면으로 바로 (FR-94c)
+      nav(me.role === 'station' ? '/check' : loc.state?.from ?? '/dashboard', { replace: true });
     } catch (err) {
       setError((err as Error).message);
     } finally { setBusy(false); }
@@ -37,7 +38,7 @@ export default function Login() {
         <div>
           <img src="/logo.svg" alt="" className="login-logo" />
           <h1>투표율 집계 시스템</h1>
-          <p className="muted small">중앙선거관리위원회 전용. 이름과 발급받은 코드로 들어옵니다.</p>
+          <p className="muted small">중앙선거관리위원회 전용. 이름과 발급받은 코드로 들어옵니다. 투표소 기기는 이름에 투표소 이름을 넣습니다.</p>
         </div>
         <div className="field">
           <label htmlFor="name">이름</label>
@@ -49,7 +50,7 @@ export default function Login() {
         </div>
         {error && <div className="alert danger" role="alert">{error}</div>}
         <button className="btn primary block" disabled={busy || !name || !code}>{busy ? '확인 중…' : '로그인'}</button>
-        <p className="muted small center">세션은 2시간 뒤 자동으로 만료됩니다.</p>
+        <p className="muted small center">세션은 2시간 뒤 자동으로 만료됩니다 (투표소 기기는 10시간, 자정까지).</p>
       </motion.form>
     </div>
   );

@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from './db/index.js';
 import {
-  COOKIE, HttpError, TIME_RE, cookieHeader, int, loadConfig, log, requireAdmin, requireAuth, route, routes, slotKey, str,
+  COOKIE, HttpError, TIME_RE, cookieHeader, int, loadConfig, log, requireAdmin, requireAuth, requirePerson, route, routes, slotKey, str,
   type ApiRequest, type ApiResponse,
 } from './core.js';
-import { invalidatePlaces, resyncAllEntries, rosterActive, tallyExtras } from './roster.js';
+import { deviceView, invalidatePlaces, resyncAllEntries, rosterActive, tallyExtras } from './roster.js';
+import { STATION_PATHS, createDevice, revokeDevice, touchDevice } from './stations.js';
 import type {
-  AuditLog, ChangeRequest, Db, District, Election, ElectionDay, Entry, Member, Slot, Station,
+  AuditLog, ChangeRequest, Db, DeviceSession, District, Election, ElectionDay, Entry, Member, Slot, Station,
 } from './db/types.js';
 import {
   createSessionToken, generateCode, hashCode, readSessionToken, verifyCode, SESSION_TTL_MS,
@@ -34,6 +35,17 @@ route('POST', '/login', async ({ db, req }) => {
     fail();
   }
   await db.update('member', { id: member.id }, { failed_count: 0, locked_until: null, last_login_at: nowIso() });
+  if (member.role === 'station') {
+    // 투표소 공용 계정: 기기마다 세션 1행 (10시간, 자정 만료, FR-94a)
+    const dev = await createDevice(db, member, req.userAgent ?? null);
+    const exp = Date.parse(dev.expires_at);
+    const token = createSessionToken(member.id, member.code_version, { sid: dev.id, exp });
+    return {
+      status: 200,
+      body: { id: member.id, name: member.name, role: member.role, station_id: member.station_id, device: deviceView(dev), expires_at: dev.expires_at },
+      headers: { 'Set-Cookie': cookieHeader(token, exp - Date.now()) },
+    } satisfies ApiResponse;
+  }
   const token = createSessionToken(member.id, member.code_version);
   return {
     status: 200,
@@ -42,11 +54,17 @@ route('POST', '/login', async ({ db, req }) => {
   } satisfies ApiResponse;
 });
 
-route('POST', '/logout', async () => ({ status: 200, body: { ok: true }, headers: { 'Set-Cookie': cookieHeader(null) } }));
+route('POST', '/logout', async (ctx) => {
+  if (ctx.device) await revokeDevice(ctx.db, ctx.device.id);
+  return { status: 200, body: { ok: true }, headers: { 'Set-Cookie': cookieHeader(null) } };
+});
 
 route('GET', '/me', async (ctx) => {
   const m = requireAuth(ctx);
-  return { id: m.id, name: m.name, role: m.role, pledged_at: m.pledged_at ?? null };
+  return {
+    id: m.id, name: m.name, role: m.role, pledged_at: m.pledged_at ?? null,
+    station_id: m.station_id ?? null, device: deviceView(ctx.device),
+  };
 });
 
 // ---------- Config ----------
@@ -58,7 +76,7 @@ route('GET', '/config', async (ctx) => {
 
 // ---------- Tally ----------
 route('GET', '/tally', async (ctx) => {
-  requireAuth(ctx);
+  requirePerson(ctx);
   const cfg = await loadConfig(ctx.db);
   const entries = await ctx.db.all<Entry>('entry');
   const points = computeTally({ ...cfg, entries, extensionEnabled: cfg.election.extension_enabled });
@@ -69,13 +87,13 @@ route('GET', '/tally', async (ctx) => {
 
 // ---------- Entries ----------
 route('GET', '/entries', async (ctx) => {
-  requireAuth(ctx);
+  requirePerson(ctx);
   const entries = await ctx.db.all<Entry>('entry');
   return { entries };
 });
 
 route('POST', '/entries', async (ctx) => {
-  const me = requireAuth(ctx);
+  const me = requirePerson(ctx);
   const { db, req } = ctx;
   if (me.role !== 'admin' && (await rosterActive(db))) throw new HttpError(403, 'roster_mode', '선거인명부 체크로 자동 집계합니다. 손 입력은 총관리자 비상용입니다.');
   const cfg = await loadConfig(db);
@@ -168,7 +186,7 @@ route('POST', '/slots/confirm', async (ctx) => {
 
 // ---------- Change requests ----------
 route('GET', '/change-requests', async (ctx) => {
-  const me = requireAuth(ctx);
+  const me = requirePerson(ctx);
   const all = await ctx.db.all<ChangeRequest>('change_request', undefined, 'requested_at desc');
   const mine = me.role === 'admin' ? all : all.filter((r) => r.requested_by === me.id);
   const entries = await ctx.db.all<Entry>('entry');
@@ -176,7 +194,7 @@ route('GET', '/change-requests', async (ctx) => {
 });
 
 route('POST', '/change-requests', async (ctx) => {
-  const me = requireAuth(ctx);
+  const me = requirePerson(ctx);
   const entryId = str(ctx.req.body?.entry_id, '입력값');
   const cumulative = int(ctx.req.body?.new_cumulative, '누적 투표자수');
   const leave = int(ctx.req.body?.new_leave_cumulative, '휴학생 투표자수');
@@ -349,17 +367,30 @@ route('GET', '/members', async (ctx) => {
 
 route('POST', '/members', async (ctx) => {
   const me = requireAdmin(ctx);
-  const name = str(ctx.req.body?.name, '이름', 50);
-  const role = ctx.req.body?.role === 'admin' ? 'admin' : 'member';
+  const role = ctx.req.body?.role === 'admin' ? 'admin' : ctx.req.body?.role === 'station' ? 'station' : 'member';
+  let stationId: string | null = null;
+  let name: string;
+  if (role === 'station') {
+    // 투표소 계정 (FR-92): 투표소 1곳에 묶고, 이름은 투표소 이름
+    const st = await ctx.db.get<Station>('station', { id: str(ctx.req.body?.station_id, '투표소') });
+    if (!st) throw new HttpError(400, 'bad_request', '투표소를 고르세요.');
+    const existing = (await ctx.db.all<Member>('member', { role: 'station' })).find((m) => m.active && m.station_id === st.id);
+    if (existing) throw new HttpError(409, 'exists', `${st.name} 투표소 계정이 이미 있습니다. 코드를 다시 받으려면 재발급하세요.`);
+    stationId = st.id;
+    name = ctx.req.body?.name ? str(ctx.req.body.name, '이름', 50) : st.name;
+  } else {
+    name = str(ctx.req.body?.name, '이름', 50);
+  }
   const dup = (await ctx.db.all<Member>('member', { name })).find((m) => m.active);
-  if (dup) throw new HttpError(409, 'exists', '같은 이름의 활성 위원이 있습니다. 구분되는 이름을 쓰세요.');
+  if (dup) throw new HttpError(409, 'exists', '같은 이름의 활성 계정이 있습니다. 구분되는 이름을 쓰세요.');
   const code = generateCode();
   const member: Member = {
     id: randomUUID(), name, role, code_hash: hashCode(code), code_version: 1, active: true,
     created_at: nowIso(), last_login_at: null, failed_count: 0, locked_until: null,
+    ...(stationId ? { station_id: stationId } : {}), // v1.2 열은 투표소 계정일 때만 (스키마 재실행 전에도 위원 추가가 되도록)
   };
   await ctx.db.insert('member', member);
-  await log(ctx.db, me, 'member.create', { after_json: JSON.stringify({ name, role }) });
+  await log(ctx.db, me, 'member.create', { station_id: stationId, after_json: JSON.stringify({ name, role }) });
   const { code_hash: _h, ...safe } = member;
   return { member: safe, code };
 });
@@ -370,7 +401,9 @@ route('POST', '/members/:id/regenerate', async (ctx) => {
   if (!m) throw new HttpError(404, 'not_found');
   const code = generateCode();
   await ctx.db.update('member', { id: m.id }, { code_hash: hashCode(code), code_version: m.code_version + 1, failed_count: 0, locked_until: null });
-  await log(ctx.db, me, 'member.regenerate', { note: m.name });
+  // 투표소 계정은 코드 재발급으로 그 계정의 모든 기기가 끊긴다 (토큰 버전으로 이미 무효, 기기 목록에도 표시)
+  if (m.role === 'station') await ctx.db.update('device_session', { member_id: m.id, revoked_at: null }, { revoked_at: nowIso() });
+  await log(ctx.db, me, 'member.regenerate', { station_id: m.station_id ?? null, note: m.name });
   return { code };
 });
 
@@ -379,8 +412,18 @@ route('PUT', '/members/:id', async (ctx) => {
   const m = await ctx.db.get<Member>('member', { id: ctx.params.id });
   if (!m) throw new HttpError(404, 'not_found');
   const patch: Partial<Member> = {};
-  if (ctx.req.body?.role !== undefined) patch.role = ctx.req.body.role === 'admin' ? 'admin' : 'member';
+  if (ctx.req.body?.role !== undefined) {
+    const next = ctx.req.body.role === 'admin' ? 'admin' : ctx.req.body.role === 'station' ? 'station' : 'member';
+    if ((m.role === 'station') !== (next === 'station') && next !== m.role) {
+      throw new HttpError(400, 'bad_request', '투표소 계정과 사람 계정은 서로 바꿀 수 없습니다. 새로 만드세요.');
+    }
+    patch.role = next;
+  }
   if (ctx.req.body?.active !== undefined) patch.active = ctx.req.body.active === true;
+  if (patch.active === true && !m.active && m.role === 'station') {
+    const other = (await ctx.db.all<Member>('member', { role: 'station' })).find((x) => x.active && x.id !== m.id && x.station_id === m.station_id);
+    if (other) throw new HttpError(409, 'exists', '같은 투표소의 활성 계정이 이미 있습니다.');
+  }
   if (ctx.req.body?.name !== undefined) patch.name = str(ctx.req.body.name, '이름', 50);
   const next = { ...m, ...patch };
   if (m.role === 'admin' && (next.role !== 'admin' || !next.active)) {
@@ -388,6 +431,7 @@ route('PUT', '/members/:id', async (ctx) => {
     if (admins.length === 0) throw new HttpError(409, 'last_admin', '총관리자가 1명뿐이면 권한을 내리거나 비활성화할 수 없습니다.');
   }
   await ctx.db.update('member', { id: m.id }, { ...patch, code_version: m.code_version + (patch.active === false ? 1 : 0) });
+  if (patch.active === false && m.role === 'station') await ctx.db.update('device_session', { member_id: m.id, revoked_at: null }, { revoked_at: nowIso() });
   await log(ctx.db, me, 'member.update', { before_json: JSON.stringify({ name: m.name, role: m.role, active: m.active }), after_json: JSON.stringify({ name: next.name, role: next.role, active: next.active }) });
   return { ok: true };
 });
@@ -485,17 +529,30 @@ export async function handle(req: ApiRequest): Promise<ApiResponse> {
     await seeded;
     const session = readSessionToken(req.cookies[COOKIE]);
     let member: Member | null = null;
+    let device: DeviceSession | null = null;
     if (session) {
-      const m = await db.get<Member>('member', { id: session.mid });
-      if (m && m.active && m.code_version === session.v) member = m;
+      // 계정과 (투표소 계정이면) 기기 세션을 한 번에 읽는다
+      const [m, d] = await Promise.all([
+        db.get<Member>('member', { id: session.mid }),
+        session.sid ? db.get<DeviceSession>('device_session', { id: session.sid }) : Promise.resolve(null),
+      ]);
+      if (m && m.active && m.code_version === session.v) {
+        if (m.role !== 'station') member = m;
+        else if (d && d.member_id === m.id && !d.revoked_at && Date.parse(d.expires_at) > Date.now()) { member = m; device = d; }
+      }
     }
+    // 투표소 계정은 명부 확인·자기 대조 기록만 (FR-94c)
+    if (member?.role === 'station' && !STATION_PATHS.some((p) => p.method === req.method && p.re.test(req.path))) {
+      throw new HttpError(403, 'station_forbidden', '투표소 계정에서는 쓸 수 없는 기능입니다.');
+    }
+    if (device) device = await touchDevice(db, device);
     for (const r of routes) {
       if (r.method !== req.method) continue;
       const m = r.pattern.exec(req.path);
       if (!m) continue;
       const params: Record<string, string> = {};
       r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
-      const result = await r.handler({ db, member, req, params });
+      const result = await r.handler({ db, member, device, req, params });
       if (result && typeof result === 'object' && 'status' in (result as any) && 'body' in (result as any)) return result as ApiResponse;
       return { status: 200, body: result };
     }

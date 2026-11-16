@@ -8,7 +8,13 @@ export interface ElectionDay { id: string; date: string; is_extension: boolean; 
 export interface District { id: string; name: string; sort: number; base_voters: number }
 export interface Station { id: string; district_id: string; name: string; sort: number; open_time: string; close_time: string }
 export interface Slot { id: string; station_id: string; day_id: string; time: string; is_close: boolean }
-export interface Me { id: string; name: string; role: 'admin' | 'member'; pledged_at?: string | null }
+/** admin = 총관리자, member = 선관위원, station = 투표소 공용 계정 (v1.2) */
+export type Role = 'admin' | 'member' | 'station';
+export interface DeviceInfo {
+  id: string; device_no: number; operator_name: string | null; operator_since: string | null; operator_pledged: boolean;
+  created_at: string; expires_at: string;
+}
+export interface Me { id: string; name: string; role: Role; pledged_at?: string | null; station_id?: string | null; device?: DeviceInfo | null }
 export interface Config { election: Election; days: ElectionDay[]; districts: District[]; stations: Station[]; slots: Slot[]; roster_active: boolean; server_now: string }
 export interface Entry {
   id: string; station_id: string; slot_id: string; cumulative: number; leave_cumulative: number;
@@ -20,8 +26,8 @@ export interface ChangeRequest {
   decided_by_name: string | null; decided_at: string | null; decision_note: string | null; entry: Entry | null;
 }
 export interface MemberRow {
-  id: string; name: string; role: 'admin' | 'member'; code_version: number; active: boolean; created_at: string; last_login_at: string | null;
-  pledged_at: string | null;
+  id: string; name: string; role: Role; code_version: number; active: boolean; created_at: string; last_login_at: string | null;
+  pledged_at: string | null; station_id?: string | null; locked_until?: string | null;
 }
 export interface AuditLog {
   id: string; at: string; actor_id: string; actor_name: string; action: string; station_id: string | null; slot_id: string | null;
@@ -51,9 +57,10 @@ export interface Tally {
 
 // ---- 선거인명부 (v1.1) ----
 export type VoterKind = 'regular' | 'associate';
-export interface Shift { id: string; member_id: string; station_id: string; date: string; start_time: string; end_time: string }
+/** 투표소 운영시간 안인지 (FR-93) */
+export interface StationHours { allowed: boolean; label: string; message: string | null }
 export interface RosterMe {
-  pledged_at: string | null; role: 'admin' | 'member'; shift: Shift | null; today_shifts: Shift[];
+  pledged_at: string | null; role: Role; station: Station | null; device: DeviceInfo | null; hours: StationHours | null;
   roster_ready: boolean; uploading: boolean; purged: boolean; server_now: string;
 }
 export type LookupResult =
@@ -67,7 +74,7 @@ export interface TallyWindow {
   closed_by_name: string; matched_at: string | null; matched_by_name: string | null; net?: number; leave_net?: number;
 }
 export interface StationStatus {
-  station: Station; shift: Shift | null; open_count: number; open_leave: number;
+  station: Station; hours: StationHours; open_count: number; open_leave: number;
   reconciling: (TallyWindow & { net: number; leave_net: number }) | null; last_window: TallyWindow | null;
   recent: { id: string; at: string; is_leave: boolean; canceled: boolean; source: string }[]; server_now: string;
 }
@@ -79,7 +86,18 @@ export interface RosterSummary {
 }
 export interface AccessLogRow {
   id: string; at: string; member_id: string; member_name: string; station_id: string | null; action: string; sid_hash8: string | null; result: string | null; note: string | null;
+  operator_name?: string | null;
 }
+// ---- 투표소 계정·기기 (v1.2) ----
+export interface DeviceRow {
+  id: string; member_id: string; station_id: string; device_no: number; created_at: string; expires_at: string; last_seen_at: string;
+  operator_name: string | null; operator_since: string | null; revoked_at: string | null; user_agent: string | null;
+  status: 'active' | 'expired' | 'revoked'; history: { operator_name: string; started_at: string }[];
+}
+export interface StationAccounts {
+  stations: { station: Station; accounts: MemberRow[]; devices: DeviceRow[] }[]; server_now: string;
+}
+export const roleLabel = (r: Role | undefined) => (r === 'admin' ? '총관리자' : r === 'station' ? '투표소' : '선관위원');
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public extra?: any) { super(message); }
@@ -106,7 +124,11 @@ async function request<T>(path: string, init?: { method?: string; body?: unknown
   const text = await res.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  if (!res.ok) throw new ApiError(res.status, data?.error ?? 'error', data?.message ?? `오류 (${res.status})`, data?.extra);
+  if (!res.ok) {
+    // 세션 만료·강제 로그아웃: 다음 요청에서 바로 로그인 화면으로 (FR-94b)
+    if (res.status === 401 && path !== '/login' && path !== '/me') window.dispatchEvent(new Event('auth:expired'));
+    throw new ApiError(res.status, data?.error ?? 'error', data?.message ?? `오류 (${res.status})`, data?.extra);
+  }
   return data as T;
 }
 

@@ -56,9 +56,15 @@ CREATE TABLE IF NOT EXISTS shift (
 CREATE TABLE IF NOT EXISTS voter_access_log (
   id TEXT PRIMARY KEY, at TEXT NOT NULL, member_id TEXT NOT NULL, member_name TEXT NOT NULL, station_id TEXT,
   action TEXT NOT NULL, sid_hash8 TEXT, result TEXT, note TEXT);
+CREATE TABLE IF NOT EXISTS device_session (
+  id TEXT PRIMARY KEY, member_id TEXT NOT NULL, station_id TEXT NOT NULL, device_no INTEGER NOT NULL,
+  created_at TEXT NOT NULL, expires_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+  operator_name TEXT, operator_since TEXT, operator_pledged_at TEXT, revoked_at TEXT, user_agent TEXT);
+CREATE TABLE IF NOT EXISTS operator_log (
+  id TEXT PRIMARY KEY, device_id TEXT NOT NULL, station_id TEXT NOT NULL, operator_name TEXT NOT NULL, started_at TEXT NOT NULL);
 `;
 
-/** v1.0 로컬 DB에 v1.1 열을 더한다. */
+/** 이전 버전 로컬 DB에 v1.1·v1.2 열을 더한다. */
 const ADD_COLUMNS: [string, string, string][] = [
   ['election', 'result_announced_on', 'TEXT'],
   ['election', 'retention_days', 'INTEGER NOT NULL DEFAULT 7'],
@@ -66,6 +72,12 @@ const ADD_COLUMNS: [string, string, string][] = [
   ['election', 'roster_upload', 'TEXT'],
   ['election', 'last_backup_at', 'TEXT'],
   ['member', 'pledged_at', 'TEXT'],
+  // v1.2 투표소 계정
+  ['member', 'station_id', 'TEXT'],
+  ['ballot_event', 'operator_name', 'TEXT'],
+  ['ballot_event', 'device_id', 'TEXT'],
+  ['tally_window', 'operator_name', 'TEXT'],
+  ['voter_access_log', 'operator_name', 'TEXT'],
 ];
 
 export function createSqliteDb(path: string): Db {
@@ -92,9 +104,10 @@ export function createSqliteDb(path: string): Db {
         if (!v || v.voted_at || v.batch_id) return { ok: false as const, voted_at: v?.voted_at ?? null, voted_station_id: v?.voted_station_id ?? null };
         run('UPDATE voter SET voted_at = ?, voted_station_id = ?, voted_event_id = ? WHERE id = ?', i.at, i.station_id, i.event_id, i.voter_id);
         const isLeave = v.kind === 'associate';
-        run(`INSERT INTO ballot_event (id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason)
-             VALUES (?, ?, ?, ?, 'issue', NULL, ?, ?, ?, ?, ?, ?, ?)`,
-          i.event_id, i.voter_id, i.sid_hash, i.station_id, isLeave ? 1 : 0, i.at, i.actor_id, i.actor_name, i.window_id, i.source, i.reason);
+        run(`INSERT INTO ballot_event (id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason, operator_name, device_id)
+             VALUES (?, ?, ?, ?, 'issue', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          i.event_id, i.voter_id, i.sid_hash, i.station_id, isLeave ? 1 : 0, i.at, i.actor_id, i.actor_name, i.window_id, i.source, i.reason,
+          i.operator_name ?? null, i.device_id ?? null);
         return { ok: true as const, is_leave: isLeave };
       });
     },
@@ -107,9 +120,10 @@ export function createSqliteDb(path: string): Db {
           const w = one('SELECT status FROM tally_window WHERE id = ?', e.window_id);
           if (w?.status !== 'reconciling') return { ok: false as const, reason: 'window_closed' };
         }
-        run(`INSERT INTO ballot_event (id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason)
-             VALUES (?, ?, ?, ?, 'cancel', ?, ?, ?, ?, ?, ?, ?, ?)`,
-          c.cancel_id, e.voter_id, e.voter_sid_hash, e.station_id, e.id, e.is_leave, c.at, c.actor_id, c.actor_name, e.window_id, e.source, c.reason);
+        run(`INSERT INTO ballot_event (id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason, operator_name, device_id)
+             VALUES (?, ?, ?, ?, 'cancel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          c.cancel_id, e.voter_id, e.voter_sid_hash, e.station_id, e.id, e.is_leave, c.at, c.actor_id, c.actor_name, e.window_id, e.source, c.reason,
+          c.operator_name ?? null, c.device_id ?? null);
         run('UPDATE voter SET voted_at = NULL, voted_station_id = NULL, voted_event_id = NULL WHERE sid_hash = ? AND voted_event_id = ?', e.voter_sid_hash, e.id);
         return { ok: true as const };
       });

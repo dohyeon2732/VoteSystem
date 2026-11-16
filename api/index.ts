@@ -9,6 +9,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     query: Object.fromEntries(url.searchParams),
     body: req.body,
     cookies: req.cookies ?? {},
+    userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
   });
   res.status(out.status);
   for (const [k, v] of Object.entries(out.headers ?? {})) res.setHeader(k, v);

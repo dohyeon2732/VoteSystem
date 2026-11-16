@@ -7,6 +7,8 @@ interface Store {
   config: Config | null;
   refreshConfig: () => Promise<void>;
   setMe: (m: Me | null) => void;
+  /** 담당자 변경처럼 /me 내용이 바뀐 뒤 다시 읽는다 */
+  refreshMe: () => Promise<void>;
   theme: 'light' | 'dark';
   setTheme: (t: 'light' | 'dark') => void;
 }
@@ -33,6 +35,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     api<Me>('/me').then((m) => { setMeState(m); }).catch(() => setMeState(null));
+    // 세션이 끝나거나 기기가 강제 로그아웃되면 로그인 화면으로
+    const onExpired = () => { setMeState(null); setConfig(null); hasConfig.current = false; };
+    window.addEventListener('auth:expired', onExpired);
+    return () => window.removeEventListener('auth:expired', onExpired);
   }, []);
   useEffect(() => { if (me) refreshConfig(); }, [me, refreshConfig]);
   useEffect(() => {
@@ -42,6 +48,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Store>(() => ({
     me, config, refreshConfig,
+    refreshMe: async () => { try { setMeState(await runSilently(() => api<Me>('/me'))); } catch { /* 401은 auth:expired로 처리 */ } },
     setMe: (m) => { setMeState(m); if (!m) { setConfig(null); hasConfig.current = false; } },
     theme, setTheme: setThemeState,
   }), [me, config, refreshConfig, theme]);

@@ -422,7 +422,7 @@ export default function AdminRoster() {
           <button className="btn" disabled={busy || sum.event_count > 0 || !!sum.purged_at} onClick={makeFake}>가짜 명부 23,000명 만들기</button>
         </div>
         <h2 style={{ color: 'var(--danger)', marginTop: 8 }}>체크 기록 초기화</h2>
-        <p className="muted small">모든 체크·마감·조정 기록과 그로 생긴 자동 입력값을 지우고 투표 상태를 해제합니다. 명부·근무표·접근 로그는 남습니다. 되돌릴 수 없으니 먼저 백업하세요.</p>
+        <p className="muted small">모든 체크·마감·조정 기록과 그로 생긴 자동 입력값을 지우고 투표 상태를 해제합니다. 명부·투표소 계정·접근 로그는 남습니다. 되돌릴 수 없으니 먼저 백업하세요.</p>
         <div className="row">
           <input className="input" style={{ maxWidth: 220 }} placeholder="체크기록초기화 라고 입력" value={resetText} onChange={(e) => setResetText(e.target.value)} />
           <button className="btn danger" disabled={busy || resetText.trim() !== '체크기록초기화'} onClick={() => run(() => api('/roster/reset-checks', { body: { confirm: '체크기록초기화' } }).then(() => setResetText('')), '체크 기록을 초기화했습니다.')}>초기화 실행</button>

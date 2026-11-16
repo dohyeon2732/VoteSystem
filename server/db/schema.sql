@@ -1,4 +1,4 @@
--- Supabase SQL 편집기에서 실행하세요. 여러 번 실행해도 안전합니다 (v1.1 선거인명부 추가분 포함).
+-- Supabase SQL 편집기에서 실행하세요. 여러 번 실행해도 안전합니다 (v1.1 선거인명부, v1.2 투표소 계정 추가분 포함).
 create table if not exists election (
   id text primary key, name text not null, threshold_pct numeric not null default 50,
   extension_enabled boolean not null default false, input_locked boolean not null default false,
@@ -83,6 +83,27 @@ alter table tally_window enable row level security;
 alter table shift enable row level security;
 alter table voter_access_log enable row level security;
 
+-- ============================================================
+-- v1.2 투표소 공용 계정·기기 세션 (2026-11-06 추가, 근무표 대체)
+-- ============================================================
+alter table member add column if not exists station_id text;
+alter table ballot_event add column if not exists operator_name text;
+alter table ballot_event add column if not exists device_id text;
+alter table tally_window add column if not exists operator_name text;
+alter table voter_access_log add column if not exists operator_name text;
+create table if not exists device_session (
+  id text primary key, member_id text not null references member(id), station_id text not null references station(id),
+  device_no int not null, created_at text not null, expires_at text not null, last_seen_at text not null,
+  operator_name text, operator_since text, operator_pledged_at text, revoked_at text, user_agent text);
+create index if not exists device_session_station_idx on device_session(station_id, created_at);
+create table if not exists operator_log (
+  id text primary key, device_id text not null references device_session(id), station_id text not null,
+  operator_name text not null, started_at text not null);
+create index if not exists operator_log_device_idx on operator_log(device_id, started_at);
+create index if not exists ballot_event_device_idx on ballot_event(device_id, at);
+alter table device_session enable row level security;
+alter table operator_log enable row level security;
+
 -- 체크 기록은 추가만 가능: 삭제 금지, 수정은 비어 있는 구간 번호(window_id)를 한 번 채우는 것만 허용.
 -- 체크 기록 초기화·파기 함수만 vote.allow_purge 를 켜고 지울 수 있다.
 create or replace function ballot_event_guard() returns trigger language plpgsql as $$
@@ -108,9 +129,11 @@ begin
     select voted_at, voted_station_id into v_at, v_st from voter where id = p->>'voter_id';
     return jsonb_build_object('ok', false, 'voted_at', v_at, 'voted_station_id', v_st);
   end if;
-  insert into ballot_event(id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason)
+  insert into ballot_event(id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason,
+                           operator_name, device_id)
   values (p->>'event_id', p->>'voter_id', p->>'sid_hash', p->>'station_id', 'issue', null, v_kind = 'associate',
-          p->>'at', p->>'actor_id', p->>'actor_name', p->>'window_id', p->>'source', p->>'reason');
+          p->>'at', p->>'actor_id', p->>'actor_name', p->>'window_id', p->>'source', p->>'reason',
+          p->>'operator_name', p->>'device_id');
   return jsonb_build_object('ok', true, 'is_leave', v_kind = 'associate');
 end $$;
 
@@ -126,9 +149,11 @@ begin
     select status into w_status from tally_window where id = e.window_id;
     if w_status is distinct from 'reconciling' then return jsonb_build_object('ok', false, 'reason', 'window_closed'); end if;
   end if;
-  insert into ballot_event(id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason)
+  insert into ballot_event(id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason,
+                           operator_name, device_id)
   values (p->>'cancel_id', e.voter_id, e.voter_sid_hash, e.station_id, 'cancel', e.id, e.is_leave,
-          p->>'at', p->>'actor_id', p->>'actor_name', e.window_id, e.source, p->>'reason');
+          p->>'at', p->>'actor_id', p->>'actor_name', e.window_id, e.source, p->>'reason',
+          p->>'operator_name', p->>'device_id');
   update voter set voted_at = null, voted_station_id = null, voted_event_id = null
     where sid_hash = e.voter_sid_hash and voted_event_id = e.id;
   return jsonb_build_object('ok', true);

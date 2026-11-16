@@ -26,6 +26,7 @@ createServer(async (req, res) => {
   }
   const out = await handle({
     method: req.method ?? 'GET', path: url.pathname.slice(4), query: Object.fromEntries(url.searchParams), body, cookies,
+    userAgent: req.headers['user-agent'],
   });
   res.statusCode = out.status;
   const headers = out.headers ?? {};

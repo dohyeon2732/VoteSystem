@@ -1,14 +1,16 @@
 import { useState, type FormEvent } from 'react';
-import { api, fmtTime, type MemberRow } from '../apis';
+import { Link } from 'react-router-dom';
+import { api, fmtTime, type MemberRow, type Role } from '../apis';
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
 import Sheet from '../components/Sheet';
 
 export default function AdminMembers() {
-  const { me } = useStore();
+  const { me, config } = useStore();
   const { data, reload } = usePolling(() => api<{ members: MemberRow[] }>('/members'), 15000, []);
   const [name, setName] = useState('');
-  const [role, setRole] = useState<'member' | 'admin'>('member');
+  const [role, setRole] = useState<Role>('member');
+  const [stationId, setStationId] = useState('');
   const [issued, setIssued] = useState<{ name: string; code: string } | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -18,7 +20,14 @@ export default function AdminMembers() {
     setBusy(true); setMsg(null);
     try { await fn(); await reload(); } catch (e) { setMsg((e as Error).message); } finally { setBusy(false); }
   };
-  const add = (e: FormEvent) => { e.preventDefault(); run(async () => { const r = await api<{ code: string }>('/members', { body: { name, role } }); setIssued({ name, code: r.code }); setName(''); }); };
+  const add = (e: FormEvent) => {
+    e.preventDefault();
+    run(async () => {
+      const r = await api<{ code: string; member: MemberRow }>('/members', { body: role === 'station' ? { role, station_id: stationId } : { name, role } });
+      setIssued({ name: r.member.name, code: r.code }); setName(''); setStationId('');
+    });
+  };
+  const sname = (id?: string | null) => config?.stations.find((s) => s.id === id)?.name ?? '';
   const regen = (m: MemberRow) => { if (!window.confirm(`${m.name}의 코드를 재발급할까요? 이전 코드는 즉시 쓸 수 없게 됩니다.`)) return; run(async () => { const r = await api<{ code: string }>(`/members/${m.id}/regenerate`, { body: {} }); setIssued({ name: m.name, code: r.code }); }); };
   const setActive = (m: MemberRow, active: boolean) => run(() => api(`/members/${m.id}`, { method: 'PUT', body: { active } }));
   const setRoleOf = (m: MemberRow, r: 'admin' | 'member') => run(() => api(`/members/${m.id}`, { method: 'PUT', body: { role: r } }));
@@ -30,12 +39,19 @@ export default function AdminMembers() {
     <tr key={m.id} style={{ opacity: m.active ? 1 : 0.6 }}>
       <td style={{ fontWeight: 600 }}>{m.name}{m.id === me?.id && <span className="muted small"> (나)</span>}</td>
       <td>
-        <select className="input" style={{ width: 120 }} value={m.role} disabled={busy || !m.active} onChange={(e) => setRoleOf(m, e.target.value as 'admin' | 'member')}>
-          <option value="member">선관위원</option><option value="admin">총관리자</option>
-        </select>
+        {m.role === 'station' ? (
+          <span className="pill accent">투표소 · {sname(m.station_id)}</span>
+        ) : (
+          <select className="input" style={{ width: 120 }} value={m.role} disabled={busy || !m.active} onChange={(e) => setRoleOf(m, e.target.value as 'admin' | 'member')}>
+            <option value="member">선관위원</option><option value="admin">총관리자</option>
+          </select>
+        )}
       </td>
       <td className="small muted">{m.last_login_at ? fmtTime(m.last_login_at) : '-'}</td>
-      <td className="small">{m.pledged_at ? <span className="muted">{fmtTime(m.pledged_at)}</span> : <span className="pill warn">미서약</span>}</td>
+      <td className="small">
+        {m.role === 'station' ? <span className="muted">기기별 담당자</span>
+          : m.pledged_at ? <span className="muted">{fmtTime(m.pledged_at)}</span> : <span className="pill warn">미서약</span>}
+      </td>
       <td>{m.active ? <span className="pill good">활성</span> : <span className="pill muted">비활성</span>}</td>
       <td><span className="actions">
         {m.active ? (
@@ -55,14 +71,25 @@ export default function AdminMembers() {
       {msg && <div className="alert danger">{msg}</div>}
       <form className="card stack" onSubmit={add}>
         <h1>위원 등록</h1>
-        <p className="muted small">등록하면 8자리 코드가 한 번만 표시됩니다. 위원에게 직접 전달하세요.</p>
+        <p className="muted small">
+          등록하면 8자리 코드가 한 번만 표시됩니다. 위원에게 직접 전달하세요.
+          투표소 계정은 이름이 투표소 이름이 되며, 16개를 한 번에 만들려면 <Link to="/admin/stations">투표소 계정</Link> 화면을 쓰세요.
+        </p>
         <div className="form-row">
-          <div className="field wide"><label htmlFor="mname">이름</label><input id="mname" className="input" placeholder="이름" value={name} onChange={(e) => setName(e.target.value)} required /></div>
-          <div className="field" style={{ flexBasis: 140 }}><label htmlFor="mrole">권한</label>
-            <select id="mrole" className="input" value={role} onChange={(e) => setRole(e.target.value as 'admin' | 'member')}>
-              <option value="member">선관위원</option><option value="admin">총관리자</option>
+          <div className="field" style={{ flexBasis: 140 }}><label htmlFor="mrole">계정 종류</label>
+            <select id="mrole" className="input" value={role} onChange={(e) => setRole(e.target.value as Role)}>
+              <option value="member">선관위원</option><option value="admin">총관리자</option><option value="station">투표소</option>
             </select></div>
-          <button className="btn primary" disabled={busy || !name.trim()}>등록</button>
+          {role === 'station' ? (
+            <div className="field wide"><label htmlFor="mst">투표소</label>
+              <select id="mst" className="input" value={stationId} onChange={(e) => setStationId(e.target.value)} required>
+                <option value="">투표소 선택</option>
+                {config?.stations.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select></div>
+          ) : (
+            <div className="field wide"><label htmlFor="mname">이름</label><input id="mname" className="input" placeholder="이름" value={name} onChange={(e) => setName(e.target.value)} required /></div>
+          )}
+          <button className="btn primary" disabled={busy || (role === 'station' ? !stationId : !name.trim())}>등록</button>
         </div>
       </form>
 
