@@ -196,9 +196,10 @@ export function createSqliteDb(path: string): Db {
 
   return {
     votes,
-    async all<T>(table: string, where?: Where, orderBy?: string, limit?: number) {
+    async all<T>(table: string, where?: Where, orderBy?: string, limit?: number, offset?: number) {
       const w = whereSql(where);
-      const rows = db.prepare(`SELECT * FROM ${table}${w.sql}${orderBy ? ' ORDER BY ' + orderBy : ''}${limit ? ' LIMIT ' + Math.floor(limit) : ''}`).all(...(w.params as any[]));
+      const page = limit ? ` LIMIT ${Math.floor(limit)}${offset ? ` OFFSET ${Math.floor(offset)}` : ''}` : '';
+      const rows = db.prepare(`SELECT * FROM ${table}${w.sql}${orderBy ? ' ORDER BY ' + orderBy : ''}${page}`).all(...(w.params as any[]));
       return rows.map((r) => fromRow<T>(table, r as Record<string, unknown>) as T);
     },
     async get<T>(table: string, where: Where) {

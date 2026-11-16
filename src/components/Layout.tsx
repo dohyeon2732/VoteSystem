@@ -1,4 +1,6 @@
+import { useSyncExternalStore } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { getAutoBackup, stopAutoBackup, subscribeAutoBackup } from '../app/autoBackup';
 import { api, fmtHM, roleLabel } from '../apis';
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
@@ -12,7 +14,8 @@ export default function Layout() {
     () => (me?.role === 'admin' ? api<{ pending_requests: number }>('/tally') : Promise.resolve({ pending_requests: 0 })), 30000, [me?.id, me?.role],
   );
   const pending = data?.pending_requests ?? 0;
-  const logout = async () => { await api('/logout', { method: 'POST', body: {} }); setMe(null); nav('/login'); };
+  const auto = useSyncExternalStore(subscribeAutoBackup, getAutoBackup);
+  const logout = async () => { stopAutoBackup(); await api('/logout', { method: 'POST', body: {} }); setMe(null); nav('/login'); };
   const cls = ({ isActive }: { isActive: boolean }) => (isActive ? 'active' : '');
   return (
     <>
@@ -50,6 +53,7 @@ export default function Layout() {
             <button className="btn sm ghost" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="테마 전환">
               {theme === 'dark' ? '☀︎' : '☾'}
             </button>
+            {auto.on && !auto.error && <span className="pill good" title="30분 자동 백업 켜짐">자동 백업{auto.lastAt ? ` ${fmtHM(new Date(auto.lastAt).toISOString())}` : ''}</span>}
             <span className="small muted who">
               {isStation
                 ? <>{me?.name} 투표소{me?.device?.operator_name ? ` · 담당자: ${me.device.operator_name} · ${fmtHM(me.device.operator_since ?? null)}부터` : ''}</>
@@ -59,6 +63,12 @@ export default function Layout() {
           </div>
         </div>
       </header>
+      {/* 자동 백업 실패는 어느 화면에서든 보이게 (FR-96a) */}
+      {auto.on && auto.error && (
+        <div className="alert danger" role="alert" style={{ margin: '12px 16px 0' }}>
+          {auto.error} · 5분 뒤 다시 시도합니다. <NavLink to="/admin/roster">선거인명부</NavLink>에서 확인하세요.
+        </div>
+      )}
       <Outlet />
     </>
   );

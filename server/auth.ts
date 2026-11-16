@@ -44,6 +44,12 @@ export function stationExpiry(now = Date.now()): number {
   return Math.min(now + STATION_TTL_MS, kstMidnight);
 }
 
+/** 자동 백업 중인 총관리자 세션 연장: 2시간 뒤와 그날 자정(KST) 중 이른 때 (FR-96a). */
+export function renewedExpiry(now = Date.now()): number {
+  const kstMidnight = Date.parse(new Date(now + 9 * 3600 * 1000).toISOString().slice(0, 10) + 'T00:00:00+09:00') + 24 * 3600 * 1000;
+  return Math.min(now + SESSION_TTL_MS, kstMidnight);
+}
+
 export function createSessionToken(memberId: string, codeVersion: number, opts: { sid?: string; exp?: number } = {}): string {
   const payload: SessionPayload = { mid: memberId, v: codeVersion, exp: opts.exp ?? Date.now() + SESSION_TTL_MS, ...(opts.sid ? { sid: opts.sid } : {}) };
   const data = Buffer.from(JSON.stringify(payload)).toString('base64url');

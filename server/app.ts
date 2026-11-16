@@ -4,7 +4,7 @@ import {
   COOKIE, HttpError, TIME_RE, cookieHeader, int, loadConfig, log, requireAdmin, requireAuth, requirePerson, route, routes, slotKey, str,
   type ApiRequest, type ApiResponse,
 } from './core.js';
-import { deviceView, invalidatePlaces, resyncAllEntries, rosterActive, tallyExtras } from './roster.js';
+import { assertNotElectionDay, deviceView, invalidatePlaces, resyncAllEntries, rosterActive, tallyExtras } from './roster.js';
 import { STATION_PATHS, createDevice, revokeDevice, touchDevice } from './stations.js';
 import type {
   AuditLog, ChangeRequest, Db, DeviceSession, District, Election, ElectionDay, Entry, Member, Slot, Station,
@@ -440,6 +440,7 @@ route('PUT', '/members/:id', async (ctx) => {
 route('POST', '/reset', async (ctx) => {
   const me = requireAdmin(ctx);
   if (String(ctx.req.body?.confirm ?? '').normalize('NFC').trim() !== '초기화') throw new HttpError(400, 'bad_request', '확인 문구가 맞지 않습니다.');
+  await assertNotElectionDay(ctx.db, '전체 입력 초기화');
   for (const t of ['change_request', 'entry', 'audit_log']) await ctx.db.removeAll(t);
   await log(ctx.db, me, 'system.reset', { note: '전체 입력 초기화 (선거인명부·체크 기록은 유지)' });
   // 명세 FR-72: 명부·체크·마감은 건드리지 않으므로, 대조 결과로 생기는 입력값은 다시 채운다
@@ -451,6 +452,7 @@ route('POST', '/reset', async (ctx) => {
 /** 리허설용 목업: 유권자수가 0인 선거구에 예시 유권자수를 넣고, 첫 투표일의 앞 시점들에 임의 누적값을 채운다. */
 route('POST', '/mock', async (ctx) => {
   const me = requireAdmin(ctx);
+  await assertNotElectionDay(ctx.db, '목업 입력');
   const cfg = await loadConfig(ctx.db);
   const SAMPLE_VOTERS: Record<string, number> = {
     '건축대학': 373, '경영대학': 1412, '공과대학': 4750, '국제대학': 361, '문과대학': 1550, '부동산과학원': 420, '사범대학': 880,

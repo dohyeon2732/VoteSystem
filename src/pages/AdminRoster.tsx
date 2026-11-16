@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
 import { api, fmtNum, fmtTime, kstToday, type District, type RosterSummary, type VoterKind } from '../apis';
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
+import { downloadBackupNow, folderPickerSupported, getAutoBackup, startAutoBackup, stopAutoBackup, subscribeAutoBackup } from '../app/autoBackup';
 import { downloadText, parseCsv, readTable, toCsv, toHM, toYMD } from '../data/sheet';
 
 type Msg = { text: string; ok: boolean } | null;
@@ -209,6 +210,7 @@ export default function AdminRoster() {
   const [ret, setRet] = useState<{ on: string; days: string } | null>(null);
   const [purgeText, setPurgeText] = useState('');
   const [purged, setPurged] = useState(false);
+  const auto = useSyncExternalStore(subscribeAutoBackup, getAutoBackup);
 
   if (!config || !sum) return <main><p className="muted center">불러오는 중…</p></main>;
   const districts = config.districts;
@@ -372,7 +374,26 @@ export default function AdminRoster() {
           <p className="muted small">학번 해시·투표소·시각·마감 기록만 담고 이름·학과는 없습니다. 꼬리표 마감 때마다 받아 두세요.</p>
           <div className="row between"><span className="muted">마지막 백업</span><strong>{sum.last_backup_at ? fmtTime(sum.last_backup_at) : '없음'}</strong></div>
           {sum.closes_since_backup > 0 && <div className="alert warn small">마지막 백업 이후 대조가 끝난 마감 {sum.closes_since_backup}건</div>}
-          <a className="btn primary" href="/api/roster/backup.csv" onClick={() => setTimeout(reload, 1500)}>백업 CSV 내려받기</a>
+          <button className="btn primary" disabled={busy} onClick={() => run(async () => { const b = await downloadBackupNow(config.stations); setMsg({ text: `${b.name} · 체크 ${fmtNum(b.events)}건 · 마감 ${fmtNum(b.windows)}건`, ok: true }); })}>백업 CSV 내려받기</button>
+          <h2 style={{ marginTop: 8 }}>자동 백업 (30분마다)</h2>
+          <p className="muted small">
+            켜 두면 이 PC가 30분마다 백업 파일을 저장합니다. {folderPickerSupported() ? '저장할 폴더를 한 번 고르면 다운로드 창 없이 그 폴더에 쌓입니다.' : '이 브라우저는 폴더 지정을 지원하지 않아 일반 다운로드로 저장됩니다 (Chrome·Edge 권장).'}
+            {' '}켜져 있는 동안은 로그인이 자정까지 유지됩니다. 이 탭을 닫거나 PC가 잠자기에 들어가면 멈춥니다.
+          </p>
+          {auto.on ? (
+            <>
+              <div className={`alert ${auto.error ? 'danger' : 'good'} small`}>
+                {auto.error ?? `자동 백업 켜짐${auto.toFolder ? ` · 폴더 "${auto.folderName}"` : ' · 다운로드 폴더'}`}
+                <div>
+                  {auto.lastAt ? `마지막 저장 ${fmtTime(new Date(auto.lastAt).toISOString())} (${auto.lastFile}) · 지금까지 ${auto.count}번` : '첫 백업을 저장하는 중…'}
+                  {auto.nextAt ? ` · 다음 ${fmtTime(new Date(auto.nextAt).toISOString())}` : ''}
+                </div>
+              </div>
+              <button className="btn" onClick={stopAutoBackup}>자동 백업 끄기</button>
+            </>
+          ) : (
+            <button className="btn" disabled={busy} onClick={() => startAutoBackup(config.stations).then(() => reload()).catch((e) => { if ((e as Error).name !== 'AbortError') setMsg({ text: (e as Error).message, ok: false }); })}>자동 백업 켜기</button>
+          )}
           <h2 style={{ marginTop: 8 }}>복원</h2>
           <p className="muted small">체크 기록이 비어 있을 때(DB 손실 또는 체크 기록 초기화 직후)만 됩니다. 명부를 다시 올린 뒤 같은 암호화 키로 복원하세요.</p>
           <input type="file" accept=".csv" onChange={(e) => { onRestoreFile(e.target.files?.[0]); e.target.value = ''; }} />

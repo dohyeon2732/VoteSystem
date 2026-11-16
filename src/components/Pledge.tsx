@@ -17,7 +17,7 @@ export default function Pledge({ onDone }: { onDone: () => void }) {
     <div className="card stack">
       <h1>개인정보 취급 서약</h1>
       <p className="muted small">선거인명부 기능을 처음 쓰기 전에 한 번 동의합니다. 동의 시각이 기록됩니다.</p>
-      <blockquote style={{ margin: 0, padding: '12px 14px', background: 'var(--surface-2)', borderRadius: 10, lineHeight: 1.7 }}>{PLEDGE_TEXT}</blockquote>
+      <blockquote style={{ margin: '12px 0 0', padding: '12px 14px', background: 'var(--surface-2)', borderRadius: 10, lineHeight: 1.7 }}>{PLEDGE_TEXT}</blockquote>
       <label className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
         <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} style={{ width: 20, height: 20, marginTop: 2 }} />
         <span>위 내용을 읽었고 서약합니다.</span>
@@ -49,9 +49,9 @@ export function OperatorForm({ current, onDone, onCancel }: { current?: string |
       </p>
       <div className="field">
         <label htmlFor="op-name">담당자 이름</label>
-        <input id="op-name" className="input big" value={name} onChange={(e) => setName(e.target.value)} maxLength={30} autoComplete="off" autoFocus />
+        <input id="op-name" className="input" placeholder="예: 홍길동" style={{ fontSize: 17 }} value={name} onChange={(e) => setName(e.target.value)} maxLength={30} autoComplete="off" autoFocus />
       </div>
-      <blockquote style={{ margin: 0, padding: '12px 14px', background: 'var(--surface-2)', borderRadius: 10, lineHeight: 1.7 }}>{PLEDGE_TEXT}</blockquote>
+      <blockquote style={{ margin: '12px 0 0', padding: '12px 14px', background: 'var(--surface-2)', borderRadius: 10, lineHeight: 1.7 }}>{PLEDGE_TEXT}</blockquote>
       <label className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
         <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} style={{ width: 20, height: 20, marginTop: 2 }} />
         <span>위 내용을 읽었고 서약합니다.</span>

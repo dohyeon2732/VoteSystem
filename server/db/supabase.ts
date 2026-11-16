@@ -38,9 +38,10 @@ export function createSupabaseDb(url: string, serviceKey: string): Db {
 
   return {
     votes,
-    async all<T>(table: string, where?: Where, orderBy?: string, limit?: number) {
+    async all<T>(table: string, where?: Where, orderBy?: string, limit?: number, offset?: number) {
       if (limit) {
-        const q = applyOrder(applyWhere(sb.from(table).select('*'), where), orderBy).limit(limit);
+        const from = Math.floor(offset ?? 0);
+        const q = applyOrder(applyWhere(sb.from(table).select('*'), where), orderBy).range(from, from + Math.floor(limit) - 1);
         return check(await q) as T[];
       }
       // 1,000행 제한을 넘는 테이블도 빠짐없이 읽도록 나눠 읽는다

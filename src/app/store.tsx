@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, type Config, type Me } from '../apis';
 import { runSilently } from './loading';
+import { stopAutoBackup } from './autoBackup';
 
 interface Store {
   me: Me | null | undefined; // undefined = loading
@@ -36,7 +37,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     api<Me>('/me').then((m) => { setMeState(m); }).catch(() => setMeState(null));
     // 세션이 끝나거나 기기가 강제 로그아웃되면 로그인 화면으로
-    const onExpired = () => { setMeState(null); setConfig(null); hasConfig.current = false; };
+    const onExpired = () => { stopAutoBackup(); setMeState(null); setConfig(null); hasConfig.current = false; };
     window.addEventListener('auth:expired', onExpired);
     return () => window.removeEventListener('auth:expired', onExpired);
   }, []);

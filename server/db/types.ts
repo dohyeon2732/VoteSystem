@@ -3,7 +3,7 @@ export type Where = Record<string, Scalar>;
 
 export interface Db {
   /** limit을 주지 않으면 모든 행을 돌려준다 (Supabase는 1,000행씩 나눠 읽음). */
-  all<T>(table: string, where?: Where, orderBy?: string, limit?: number): Promise<T[]>;
+  all<T>(table: string, where?: Where, orderBy?: string, limit?: number, offset?: number): Promise<T[]>;
   get<T>(table: string, where: Where): Promise<T | null>;
   insert<T extends object>(table: string, row: T): Promise<T>;
   update(table: string, where: Where, patch: Record<string, unknown>): Promise<void>;

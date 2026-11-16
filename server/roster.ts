@@ -4,13 +4,14 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
-  HttpError, TIME_RE, int, loadConfig, log, requireAdmin, requireAuth, route, str, type ApiResponse, type Ctx,
+  HttpError, TIME_RE, cookieHeader, int, loadConfig, log, requireAdmin, requireAuth, route, str, type ApiResponse, type Ctx,
 } from './core.js';
 import type {
   BallotEvent, BallotSource, Db, DeviceSession, District, Election, ElectionDay, Entry, Member, OperatorLog, Slot, Station,
   TallyWindow, Voter, VoterAccessLog, VoterKind,
 } from './db/types.js';
 import { nowIso, slotEpoch } from './logic/time.js';
+import { createSessionToken, renewedExpiry } from './auth.js';
 import { decrypt, encrypt, hashSid, normalizeSid } from './voterCrypto.js';
 
 const MIN = 60 * 1000;
@@ -40,6 +41,13 @@ async function election(db: Db): Promise<Election> {
 export async function rosterActive(db: Db): Promise<boolean> {
   // schema.sql(v1.1)을 아직 실행하지 않은 배포에서도 기존 기능은 그대로 동작하도록, 테이블이 없으면 명부 미사용으로 본다
   try { return (await db.count('voter', { batch_id: null })) > 0; } catch { return false; }
+}
+
+/** 선거 기간 잠금 (FR-97a): 투표일(연장일 포함)에는 기록을 지우는 작업을 거부한다. */
+export async function assertNotElectionDay(db: Db, what: string) {
+  const today = kstDate();
+  const days = await db.all<ElectionDay>('election_day');
+  if (days.some((d) => d.date === today)) throw new HttpError(423, 'election_day', `투표일에는 ${what}을(를) 할 수 없습니다. 선거 기간에는 기록을 지우는 작업이 잠깁니다.`);
 }
 
 /** 지금 기기의 담당자 이름 (투표소 계정만). */
@@ -706,6 +714,7 @@ route('PUT', '/roster/voters', async (ctx) => {
 route('POST', '/roster/reset-checks', async (ctx) => {
   const me = requireAdmin(ctx);
   if (String(ctx.req.body?.confirm ?? '').normalize('NFC').trim() !== '체크기록초기화') throw new HttpError(400, 'bad_request', '확인 문구가 맞지 않습니다.');
+  await assertNotElectionDay(ctx.db, '체크 기록 초기화');
   const entries = await ctx.db.all<Entry>('entry', { entered_by: 'system' });
   await ctx.db.votes.resetChecks();
   const crs = await ctx.db.all<{ id: string; entry_id: string }>('change_request');
@@ -718,22 +727,31 @@ route('POST', '/roster/reset-checks', async (ctx) => {
 });
 
 // ---------- 백업·복원 (FR-96) ----------
-const csvCell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-route('GET', '/roster/backup.csv', async (ctx) => {
-  const me = requireAdmin(ctx);
-  const [events, wins, stations] = await Promise.all([
-    ctx.db.all<BallotEvent>('ballot_event', undefined, 'at'), ctx.db.all<TallyWindow>('tally_window', undefined, 'boundary_at'), ctx.db.all<Station>('station'),
+const BACKUP_PAGE = 3000; // 한 번 응답이 Vercel 한도(4.5MB)를 넘지 않게 나눠 준다
+/** 백업 자료를 나눠서 준다. CSV는 브라우저가 합쳐 만든다 (FR-96, FR-96a). */
+route('GET', '/roster/backup/data', async (ctx) => {
+  requireAdmin(ctx);
+  const offset = int(ctx.req.query.offset ?? 0, 'offset');
+  const [events, total, wins] = await Promise.all([
+    ctx.db.all<BallotEvent>('ballot_event', undefined, 'at, id', BACKUP_PAGE, offset),
+    ctx.db.count('ballot_event'),
+    offset === 0 ? ctx.db.all<TallyWindow>('tally_window', undefined, 'boundary_at') : Promise.resolve([] as TallyWindow[]),
   ]);
-  const sname = (id: string) => stations.find((s) => s.id === id)?.name ?? id;
-  const lines = ['구분,시각,투표소,종류,학번해시,구간,데이터'];
-  for (const w of wins) lines.push(['마감', w.boundary_at, sname(w.station_id), w.status, '', w.id, JSON.stringify(w)].map(csvCell).join(','));
-  for (const e of events) lines.push(['체크', e.at, sname(e.station_id), e.kind, e.voter_sid_hash, e.window_id ?? '', JSON.stringify(e)].map(csvCell).join(','));
+  return { status: 200, body: { events, windows: wins, total, page: BACKUP_PAGE }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
+});
+
+/** 백업 파일 저장을 마쳤다고 기록. 자동 백업이면 로그인도 연장한다 (자정까지만). */
+route('POST', '/roster/backup/done', async (ctx) => {
+  const me = requireAdmin(ctx);
+  const auto = ctx.req.body?.auto === true;
   const at = nowIso();
   await ctx.db.update('election', { id: 'main' }, { last_backup_at: at });
-  await accessLog(ctx, null, 'backup', null, 'ok', `체크 ${events.length}건 · 마감 ${wins.length}건`);
+  await accessLog(ctx, null, 'backup', null, 'ok', `${auto ? '자동 · ' : ''}체크 ${int(ctx.req.body?.events ?? 0, '체크 수')}건 · 마감 ${int(ctx.req.body?.windows ?? 0, '마감 수')}건`);
+  if (!auto) return { ok: true, at };
+  const exp = renewedExpiry();
   return {
-    status: 200, body: '﻿' + lines.join('\r\n'),
-    headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="roster_backup_${at.slice(0, 16).replace(/[:T]/g, '-')}.csv"`, 'Cache-Control': 'no-store' },
+    status: 200, body: { ok: true, at, session_expires_at: new Date(exp).toISOString() },
+    headers: { 'Set-Cookie': cookieHeader(createSessionToken(me.id, me.code_version, { exp }), exp - Date.now()) },
   } satisfies ApiResponse;
 });
 
@@ -844,6 +862,7 @@ route('POST', '/roster/purge', async (ctx) => {
   const me = requireAdmin(ctx);
   const el = await election(ctx.db);
   if (String(ctx.req.body?.confirm ?? '').normalize('NFC').trim() !== '명부파기') throw new HttpError(400, 'bad_request', '확인 문구가 맞지 않습니다.');
+  await assertNotElectionDay(ctx.db, '파기');
   if (!el.result_announced_on) throw new HttpError(409, 'no_date', '결과 공고일을 먼저 입력하세요.');
   const from = Date.parse(`${el.result_announced_on}T00:00:00+09:00`) + el.retention_days * 86400000;
   if (Date.now() < from) throw new HttpError(409, 'too_early', `${kstDate(from)}부터 파기할 수 있습니다.`);
