@@ -1,5 +1,5 @@
 import React, { useEffect, useState, type FormEvent } from 'react';
-import { api, fmtNo, ISSUE_TYPES, type DeskList, type IssueType, type PadInfo } from '../apis';
+import { api, DEPT_SEP, fmtNo, ISSUE_TYPES, type DeskList, type IssueType, type PadInfo } from '../apis';
 
 /** 창구 고르기 (FR-107): 기존 창구, 새 학과 묶음, "전체" 중 하나 */
 export type DeskChoice = { desk_id: string } | { depts: string[] } | { all: true } | null;
@@ -18,6 +18,19 @@ export function DeskPicker({ currentId, value, onChange }: { currentId?: string 
   const free = list.depts.filter((d) => !d.desk_id);
   const picked = value && 'depts' in value ? value.depts : [];
   const isNew = !!value && 'depts' in value;
+  // 학과별로 묶는다: "학과 > 전공"의 앞부분이 같은 것끼리
+  const groups: [string, typeof free][] = [];
+  for (const d of free) {
+    const upper = d.name.split(DEPT_SEP)[0];
+    const g = groups.find((x) => x[0] === upper);
+    if (g) g[1].push(d); else groups.push([upper, [d]]);
+  }
+  const toggle = (names: string[], on: boolean) => onChange({ depts: on ? [...new Set([...picked, ...names])] : picked.filter((x) => !names.includes(x)) });
+  const chip = (key: string, label: string, on: boolean, onClick: () => void, strong = false) => (
+    <button key={key} type="button" aria-pressed={on} className={`chip ${on ? 'active' : ''}`} style={{ minHeight: 40, fontSize: 15, fontWeight: strong ? 700 : undefined, alignSelf: 'flex-start' }} onClick={onClick}>
+      {on ? '✓ ' : ''}{label}
+    </button>
+  );
   // .field label(작은 회색 글씨)·.row(줄바꿈)·.stack(여백) 규칙을 타지 않도록 전용 마크업을 쓴다
   const Option = ({ on, onPick, title, sub, children }: { on: boolean; onPick: () => void; title: string; sub?: string; children?: React.ReactNode }) => (
     <div style={{ border: `2px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 12, background: on ? 'var(--surface)' : 'var(--surface-2)', overflow: 'hidden' }}>
@@ -45,14 +58,19 @@ export function DeskPicker({ currentId, value, onChange }: { currentId?: string 
         {free.length > 0 && (
           <Option on={isNew} onPick={() => onChange({ depts: picked })} title="새 창구 만들기" sub="이 창구가 맡는 학과를 모두 고르세요">
             {isNew && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 14px 14px' }}>
-                {free.map((d) => {
-                  const on = picked.includes(d.name);
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '0 14px 14px' }}>
+                {groups.map(([upper, items]) => {
+                  const names = items.map((d) => d.name);
+                  const allOn = names.every((n) => picked.includes(n));
+                  // 전공이 없는 학과는 칩 하나. 전공이 있으면 "학과 전체" 칩과 전공 칩들
+                  if (items.length === 1 && !names[0].includes(DEPT_SEP)) return chip(names[0], upper || '(학과 미기재)', allOn, () => toggle(names, !allOn));
                   return (
-                    <button key={d.name} type="button" aria-pressed={on} className={`chip ${on ? 'active' : ''}`} style={{ minHeight: 40, fontSize: 15 }}
-                      onClick={() => onChange({ depts: on ? picked.filter((x) => x !== d.name) : [...picked, d.name] })}>
-                      {on ? '✓ ' : ''}{d.name || '(학과 미기재)'}
-                    </button>
+                    <div key={upper} style={{ borderLeft: '3px solid var(--border)', paddingLeft: 10 }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        {chip(`${upper}-all`, `${upper} 전체`, allOn, () => toggle(names, !allOn), true)}
+                        {items.map((d) => chip(d.name, d.name.split(DEPT_SEP)[1] ?? '전공 없음', picked.includes(d.name), () => toggle([d.name], !picked.includes(d.name))))}
+                      </div>
+                    </div>
                   );
                 })}
               </div>

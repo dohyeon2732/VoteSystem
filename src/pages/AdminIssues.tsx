@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, fmtNo, fmtTime, ISSUE_TYPES, type DeskInfo, type DeskList, type IssueType, type TagIssueRow } from '../apis';
+import { api, deptLabel, fmtNo, fmtTime, ISSUE_TYPES, type DeskInfo, type DeskList, type IssueType, type TagIssueRow } from '../apis';
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
 import Sheet from '../components/Sheet';
@@ -142,7 +142,7 @@ export default function AdminIssues() {
             <div className="list">
               {deskList.desks.map((d) => (
                 <div key={d.id} className="list-item">
-                  <div><div className="title">{d.name}</div><div className="sub">{d.is_unassigned ? '장애 시트·총관리자 체크용' : d.is_all ? '학과 구분 없음' : d.depts.join(', ')} · 기기 {d.device_count}대</div></div>
+                  <div><div className="title">{d.name}</div><div className="sub">{d.is_unassigned ? '장애 시트·총관리자 체크용' : d.is_all ? '학과 구분 없음' : d.depts.map(deptLabel).join(', ')} · 기기 {d.device_count}대</div></div>
                   <div className="right row" style={{ gap: 6 }}>
                     {!d.is_unassigned && <button className="btn sm ghost" onClick={() => { const name = window.prompt('창구 이름', d.name); if (name?.trim() && name.trim() !== d.name) deskAction(() => api(`/desks/${d.id}`, { method: 'PUT', body: { name } }), '창구 이름을 바꿨습니다.'); }}>이름</button>}
                     {deskList.desks.length > 1 && (
@@ -160,7 +160,7 @@ export default function AdminIssues() {
               <strong>새 창구</strong>
               <div className="chips">
                 {deskList.depts.filter((d) => !d.desk_id).map((d) => (
-                  <button key={d.name} className={`chip ${newDepts.includes(d.name) ? 'active' : ''}`} onClick={() => setNewDepts(newDepts.includes(d.name) ? newDepts.filter((x) => x !== d.name) : [...newDepts, d.name])}>{d.name || '(학과 미기재)'}</button>
+                  <button key={d.name} className={`chip ${newDepts.includes(d.name) ? 'active' : ''}`} onClick={() => setNewDepts(newDepts.includes(d.name) ? newDepts.filter((x) => x !== d.name) : [...newDepts, d.name])}>{deptLabel(d.name) || '(학과 미기재)'}</button>
                 ))}
                 {deskList.depts.every((d) => d.desk_id) && <span className="muted small">모든 학과에 창구가 있습니다.</span>}
               </div>

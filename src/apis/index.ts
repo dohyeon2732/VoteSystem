@@ -175,3 +175,6 @@ export interface TagIssueRow {
 }
 export const fmtNo = (n: number) => String(n).padStart(6, '0');
 export const rangeText = (r: PadRange) => (r.from_no === null ? '안 씀' : r.by_count ? `${r.used}장 (장수 입력)` : `${fmtNo(r.from_no)}~${fmtNo(r.to_no!)} (${r.used}장)`);
+/** 학과 아래 전공이 있으면 "학과 > 전공"으로 저장된다. 화면에는 "학과 전공"으로 보여 준다. */
+export const DEPT_SEP = ' > ';
+export const deptLabel = (s: string) => s.split(DEPT_SEP).join(' ');

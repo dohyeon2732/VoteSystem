@@ -11,7 +11,7 @@ import type {
   TallyWindow, Voter, VoterAccessLog, VoterKind, BallotPad, Desk, PadMove, PadReading, StationCounts, TagIssue, Dept,
 } from './db/types.js';
 import {
-  activePads, addDepts, allDesks, commitReadings, computeReadings, deskOf, deskView, padView, parseDepts, pickDesk, readingRanges,
+  activePads, addDepts, allDesks, commitReadings, computeReadings, deptLabel, deskOf, deskView, padView, parseDepts, pickDesk, readingRanges,
   resetDeskData, stationDesks, unassignedDesk, type ReadingItem,
 } from './desks.js';
 import { nowIso, slotEpoch } from './logic/time.js';
@@ -191,7 +191,7 @@ async function stationFor(ctx: Ctx, stationId: string, skipHours?: boolean): Pro
 }
 
 function voterView(v: Voter) {
-  return { voter_id: v.id, name: decrypt(v.name_enc), dept: decrypt(v.dept_enc), kind: v.kind };
+  return { voter_id: v.id, name: decrypt(v.name_enc), dept: deptLabel(decrypt(v.dept_enc)), kind: v.kind };
 }
 
 // ---------- 집계 연동 ----------
@@ -437,9 +437,9 @@ route('POST', '/roster/lookup', async (ctx) => {
     if (ctx.device?.desk_id) {
       const desks = await stationDesks(ctx.db, station.id);
       const mine = desks.find((d) => d.id === ctx.device!.desk_id);
-      const dept = String(out.dept ?? '').trim();
+      const dept = decrypt(v.dept_enc).trim(); // 저장된 그대로 ("학과 > 전공")
       if (mine && !mine.is_all && !mine.is_unassigned && dept && !parseDepts(mine).includes(dept)) {
-        out.desk_warning = { dept, desk_name: desks.find((d) => parseDepts(d).includes(dept))?.name ?? null };
+        out.desk_warning = { dept: deptLabel(dept), desk_name: desks.find((d) => parseDepts(d).includes(dept))?.name ?? null };
       }
     }
   }
@@ -750,6 +750,8 @@ route('POST', '/roster/upload/finish', async (ctx) => {
   if (n !== expected) throw new HttpError(409, 'count_mismatch', `서버에 저장된 행 수(${n})가 파일 행 수(${expected})와 다릅니다. 다시 올리세요.`);
   await ctx.db.update('voter', { batch_id: up.id }, { batch_id: null });
   await ctx.db.update('election', { id: 'main' }, { roster_upload: null });
+  // 학과 목록은 비워 두고, 창구 목록을 처음 열 때 새 명부에서 다시 만든다 (예전 업로드의 학과가 남지 않게)
+  await ctx.db.removeAll('dept').catch(() => undefined);
   await recomputeBaseVoters(ctx.db, me);
   const label = up.kind === 'regular' ? '정회원' : '준회원';
   await log(ctx.db, me, 'roster.upload', { note: `${label} ${n}명` });

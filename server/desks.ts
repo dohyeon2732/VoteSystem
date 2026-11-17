@@ -19,6 +19,20 @@ export const ISSUE_TYPES: Record<IssueType, string> = {
   void: '폐기 용지', lost: '꼬리표 분실', damaged: '꼬리표 훼손', unreadable: '번호 판독 불가', pad_defect: '묶음 이상', other: '기타',
 };
 
+/** 학과 아래 전공이 있으면 "학과 > 전공"으로 저장한다 (명부의 학과 열 + 전공 열). 화면에는 "학과 전공"으로 보여 준다. */
+export const DEPT_SEP = ' > ';
+export const deptLabel = (s: string) => s.split(DEPT_SEP).join(' ');
+/** 창구 이름: 한 학과의 전공을 모두 맡으면 학과 이름, 일부만 맡으면 전공 이름 */
+export function deskNameFor(depts: string[], known: Iterable<string>): string {
+  const all = [...known];
+  const parts: string[] = [];
+  for (const upper of [...new Set(depts.map((d) => d.split(DEPT_SEP)[0]))]) {
+    const mine = depts.filter((d) => d.split(DEPT_SEP)[0] === upper);
+    const whole = all.filter((d) => d.split(DEPT_SEP)[0] === upper).every((d) => mine.includes(d));
+    if (whole) parts.push(upper); else parts.push(...mine.map((d) => d.split(DEPT_SEP)[1] ?? upper));
+  }
+  return parts.join('·').slice(0, 60);
+}
 export const parseDepts = (d: Pick<Desk, 'depts'>): string[] => { try { const a = JSON.parse(d.depts || '[]'); return Array.isArray(a) ? a.map(String) : []; } catch { return []; } };
 export const deskView = (d: Desk) => ({ id: d.id, station_id: d.station_id, name: d.name, depts: parseDepts(d), is_all: d.is_all, is_unassigned: d.is_unassigned });
 
@@ -73,12 +87,12 @@ async function createDesk(db: Db, station: Station, by: string, body: any, excep
   await ensureDepts(db);
   const known = new Set((await db.all<Dept>('dept', { district_id: station.district_id })).map((d) => d.name));
   const unknown = depts.filter((d) => !known.has(d));
-  if (unknown.length) throw new HttpError(400, 'bad_dept', `이 선거구 명부에 없는 학과입니다: ${unknown.join(', ')}`);
+  if (unknown.length) throw new HttpError(400, 'bad_dept', `이 선거구 명부에 없는 학과입니다: ${unknown.map(deptLabel).join(', ')}`);
   for (const d of desks) {
     const taken = parseDepts(d).filter((x) => depts.includes(x));
-    if (taken.length) throw new HttpError(409, 'dept_taken', `${taken.join(', ')}은(는) 이미 "${d.name}" 창구가 맡고 있습니다. 그 창구를 고르세요.`);
+    if (taken.length) throw new HttpError(409, 'dept_taken', `${taken.map(deptLabel).join(', ')}은(는) 이미 "${d.name}" 창구가 맡고 있습니다. 그 창구를 고르세요.`);
   }
-  const name = typeof body?.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 60) : depts.join('·').slice(0, 60);
+  const name = typeof body?.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 60) : deskNameFor(depts, known);
   const d: Desk = { id: randomUUID(), station_id: station.id, name, depts: JSON.stringify(depts), is_all: false, is_unassigned: false, created_at: nowIso(), created_by: by, merged_into: null };
   await db.insert('desk', d);
   return d;

@@ -1,5 +1,5 @@
 import { useMemo, useState, useSyncExternalStore } from 'react';
-import { api, fmtNum, fmtTime, kstToday, type District, type RosterSummary, type VoterKind } from '../apis';
+import { api, fmtNum, fmtTime, kstToday, type District, type RosterSummary, type VoterKind, DEPT_SEP } from '../apis';
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
 import { downloadBackupNow, folderPickerSupported, getAutoBackup, startAutoBackup, stopAutoBackup, subscribeAutoBackup } from '../app/autoBackup';
@@ -34,7 +34,7 @@ function Uploader({ districts, disabled, onDone, setMsg }: { districts: District
   const [kind, setKind] = useState<VoterKind>('regular');
   const [fileName, setFileName] = useState('');
   const [table, setTable] = useState<string[][] | null>(null);
-  const [cols, setCols] = useState({ sid: -1, name: -1, district: -1, dept: -1 });
+  const [cols, setCols] = useState({ sid: -1, name: -1, district: -1, dept: -1, major: -1 });
   const [dmap, setDmap] = useState<Record<string, string>>({});
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
@@ -50,7 +50,7 @@ function Uploader({ districts, disabled, onDone, setMsg }: { districts: District
       if (t.length < 2) throw new Error('헤더와 데이터가 있는 파일이 아닙니다.');
       setFileName(f.name); setTable(t);
       const h = t[0];
-      const c = { sid: guess(h, ['학번']), name: guess(h, ['이름', '성명']), district: guess(h, ['단과', '대학', '소속']), dept: guess(h, ['학과', '전공', '학부']) };
+      const c = { sid: guess(h, ['학번']), name: guess(h, ['이름', '성명']), district: guess(h, ['단과', '대학', '소속']), dept: guess(h, ['학과', '학부']), major: guess(h, ['전공']) };
       setCols(c);
       const vals = c.district < 0 ? [] : [...new Set(t.slice(1).map((r) => (r[c.district] ?? '').trim()))];
       setDmap(Object.fromEntries(vals.map((v) => [v, districts.find((d) => d.name === v)?.id ?? districts.find((d) => v && (d.name.includes(v) || v.includes(d.name)))?.id ?? ''])));
@@ -76,7 +76,10 @@ function Uploader({ districts, disabled, onDone, setMsg }: { districts: District
       if (seen.has(sid)) { errors.push(`${line}행: 학번 ${sid} 중복 (${seen.get(sid)}행과 같음)`); return; }
       seen.set(sid, line);
       lens.set(sid.length, (lens.get(sid.length) ?? 0) + 1);
-      rows.push({ sid, name, district_id: target, dept: cols.dept >= 0 ? (r[cols.dept] ?? '').trim() : '' });
+      // 학과 아래 전공이 있으면 "학과 > 전공"으로 묶어 보낸다. 전공이 비었으면 학과만
+      const dept = cols.dept >= 0 ? (r[cols.dept] ?? '').trim() : '';
+      const major = cols.major >= 0 && cols.major !== cols.dept ? (r[cols.major] ?? '').trim() : '';
+      rows.push({ sid, name, district_id: target, dept: dept && major && major !== dept ? `${dept}${DEPT_SEP}${major}` : dept || major });
     });
     const perDistrict = districts.map((d) => ({ name: d.name, n: rows.filter((x) => x.district_id === d.id).length })).filter((x) => x.n > 0);
     return { errors, rows, excluded, perDistrict, lens: [...lens.entries()].sort((a, b) => b[1] - a[1]) };
@@ -120,7 +123,7 @@ function Uploader({ districts, disabled, onDone, setMsg }: { districts: District
         <>
           <div className="small muted">{fileName} · 데이터 {fmtNum(body.length)}행 (헤더만 표시하고 개인정보 행은 보여 주지 않습니다)</div>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            {colSelect('sid', '학번 열')}{colSelect('name', '이름 열')}{colSelect('district', '단과대학 열')}{colSelect('dept', '학과 열', true)}
+            {colSelect('sid', '학번 열')}{colSelect('name', '이름 열')}{colSelect('district', '단과대학 열')}{colSelect('dept', '학과 열', true)}{colSelect('major', '전공 열 (없으면 비움)', true)}
           </div>
           {distinctDistricts.length > 0 && (
             <div className="stack">
@@ -333,7 +336,7 @@ export default function AdminRoster() {
             <input className="input" placeholder="이름" value={add.name} onChange={(e) => setAdd({ ...add, name: e.target.value })} />
           </div>
           <div className="form-row">
-            <input className="input" placeholder="학과" value={add.dept} onChange={(e) => setAdd({ ...add, dept: e.target.value })} />
+            <input className="input" placeholder="학과 (전공이 있으면: 학과 > 전공)" value={add.dept} onChange={(e) => setAdd({ ...add, dept: e.target.value })} />
             <select className="input" value={add.district_id} onChange={(e) => setAdd({ ...add, district_id: e.target.value })}>
               <option value="">선거구</option>{districts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
