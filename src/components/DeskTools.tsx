@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import React, { useEffect, useState, type FormEvent } from 'react';
 import { api, fmtNo, ISSUE_TYPES, type DeskList, type IssueType, type PadInfo } from '../apis';
 
 /** 창구 고르기 (FR-107): 기존 창구, 새 학과 묶음, "전체" 중 하나 */
@@ -18,42 +18,49 @@ export function DeskPicker({ currentId, value, onChange }: { currentId?: string 
   const free = list.depts.filter((d) => !d.desk_id);
   const picked = value && 'depts' in value ? value.depts : [];
   const isNew = !!value && 'depts' in value;
-  const row = { gap: 10, alignItems: 'flex-start', padding: '8px 10px', borderRadius: 10, background: 'var(--surface-2)' } as const;
-  const box = { width: 20, height: 20, marginTop: 2, flex: 'none' } as const;
+  // .field label(작은 회색 글씨)·.row(줄바꿈)·.stack(여백) 규칙을 타지 않도록 전용 마크업을 쓴다
+  const Option = ({ on, onPick, title, sub, children }: { on: boolean; onPick: () => void; title: string; sub?: string; children?: React.ReactNode }) => (
+    <div style={{ border: `2px solid ${on ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 12, background: on ? 'var(--surface)' : 'var(--surface-2)', overflow: 'hidden' }}>
+      <button type="button" role="radio" aria-checked={on} onClick={onPick}
+        style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', minHeight: 52, padding: '10px 14px', background: 'none', border: 0, textAlign: 'left', font: 'inherit', color: 'var(--text)', cursor: 'pointer' }}>
+        <span aria-hidden style={{ flex: 'none', width: 20, height: 20, borderRadius: '50%', border: `2px solid ${on ? 'var(--accent)' : 'var(--muted)'}`, display: 'grid', placeItems: 'center' }}>
+          {on && <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent)' }} />}
+        </span>
+        <span style={{ minWidth: 0 }}>
+          <span style={{ display: 'block', fontSize: 16, fontWeight: 700, lineHeight: 1.35, wordBreak: 'keep-all' }}>{title}</span>
+          {sub && <span style={{ display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 2 }}>{sub}</span>}
+        </span>
+      </button>
+      {children}
+    </div>
+  );
   return (
-    <div className="field">
-      <label>창구</label>
-      <div className="stack" style={{ gap: 6 }}>
+    <div role="radiogroup" aria-label="창구">
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--muted)', marginBottom: 6 }}>창구</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {list.desks.filter((d) => !d.is_unassigned).map((d) => (
-          <label key={d.id} className="row" style={row}>
-            <input type="radio" name="desk" style={box} checked={!!value && 'desk_id' in value && value.desk_id === d.id} onChange={() => onChange({ desk_id: d.id })} />
-            <span><strong>{d.name}</strong> 창구<span className="small muted"> · 지금 기기 {d.device_count}대{d.id === currentId ? ' · 이 기기의 창구' : ''}</span></span>
-          </label>
+          <Option key={d.id} on={!!value && 'desk_id' in value && value.desk_id === d.id} onPick={() => onChange({ desk_id: d.id })}
+            title={`${d.name} 창구`} sub={`${d.id === currentId ? '이 기기의 창구 · ' : ''}지금 기기 ${d.device_count}대`} />
         ))}
         {free.length > 0 && (
-          <div style={{ ...row, display: 'block' }}>
-            <label className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
-              <input type="radio" name="desk" style={box} checked={isNew} onChange={() => onChange({ depts: [] })} />
-              <span><strong>새 창구 만들기</strong><span className="small muted"> · 이 창구가 맡는 학과를 고르세요</span></span>
-            </label>
+          <Option on={isNew} onPick={() => onChange({ depts: picked })} title="새 창구 만들기" sub="이 창구가 맡는 학과를 모두 고르세요">
             {isNew && (
-              <div className="stack" style={{ gap: 4, margin: '8px 0 0 30px' }}>
-                {free.map((d) => (
-                  <label key={d.name} className="row" style={{ gap: 8 }}>
-                    <input type="checkbox" style={{ width: 18, height: 18 }} checked={picked.includes(d.name)}
-                      onChange={(e) => onChange({ depts: e.target.checked ? [...picked, d.name] : picked.filter((x) => x !== d.name) })} />
-                    {d.name || '(학과 미기재)'}
-                  </label>
-                ))}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 14px 14px' }}>
+                {free.map((d) => {
+                  const on = picked.includes(d.name);
+                  return (
+                    <button key={d.name} type="button" aria-pressed={on} className={`chip ${on ? 'active' : ''}`} style={{ minHeight: 40, fontSize: 15 }}
+                      onClick={() => onChange({ depts: on ? picked.filter((x) => x !== d.name) : [...picked, d.name] })}>
+                      {on ? '✓ ' : ''}{d.name || '(학과 미기재)'}
+                    </button>
+                  );
+                })}
               </div>
             )}
-          </div>
+          </Option>
         )}
         {!list.desks.some((d) => d.is_all) && (
-          <label className="row" style={row}>
-            <input type="radio" name="desk" style={box} checked={!!value && 'all' in value} onChange={() => onChange({ all: true })} />
-            <span><strong>전체</strong><span className="small muted"> · 학과 구분 없이 한 줄로 운영</span></span>
-          </label>
+          <Option on={!!value && 'all' in value} onPick={() => onChange({ all: true })} title="전체" sub="학과 구분 없이 한 줄로 운영" />
         )}
       </div>
     </div>
