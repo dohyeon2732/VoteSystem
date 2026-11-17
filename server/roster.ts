@@ -12,7 +12,7 @@ import type {
 } from './db/types.js';
 import {
   activePads, addDepts, allDesks, commitReadings, computeReadings, deptLabel, deskOf, deskView, padView, parseDepts, pickDesk, readingRanges,
-  resetDeskData, stationDesks, unassignedDesk, type ReadingItem,
+  rebuildDepts, resetDeskData, stationDesks, unassignedDesk, type ReadingItem,
 } from './desks.js';
 import { nowIso, slotEpoch } from './logic/time.js';
 import { createSessionToken, renewedExpiry } from './auth.js';
@@ -750,8 +750,9 @@ route('POST', '/roster/upload/finish', async (ctx) => {
   if (n !== expected) throw new HttpError(409, 'count_mismatch', `서버에 저장된 행 수(${n})가 파일 행 수(${expected})와 다릅니다. 다시 올리세요.`);
   await ctx.db.update('voter', { batch_id: up.id }, { batch_id: null });
   await ctx.db.update('election', { id: 'main' }, { roster_upload: null });
-  // 학과 목록은 비워 두고, 창구 목록을 처음 열 때 새 명부에서 다시 만든다 (예전 업로드의 학과가 남지 않게)
-  await ctx.db.removeAll('dept').catch(() => undefined);
+  // 학과 목록을 새 명부에 맞춘다 (예전 업로드의 학과가 남지 않게). 투표소 기기가 창구 목록을 열 때 기다리지 않도록 여기서 끝낸다.
+  // 실패하면 비워 두고, 창구 목록을 처음 열 때 다시 만든다
+  await rebuildDepts(ctx.db).catch(() => ctx.db.removeAll('dept').catch(() => undefined));
   await recomputeBaseVoters(ctx.db, me);
   const label = up.kind === 'regular' ? '정회원' : '준회원';
   await log(ctx.db, me, 'roster.upload', { note: `${label} ${n}명` });

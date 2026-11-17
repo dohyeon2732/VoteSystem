@@ -59,14 +59,54 @@ export async function addDepts(db: Db, pairs: { district_id: string; name: strin
   for (const p of pairs) if (p.name) want.set(`${p.district_id}\u0000${p.name}`, p);
   if (!want.size) return;
   const have = new Set((await db.all<Dept>('dept')).map((d) => `${d.district_id}\u0000${d.name}`));
-  const rows = [...want.entries()].filter(([k]) => !have.has(k)).map(([, p]) => ({ id: randomUUID(), district_id: p.district_id, name: p.name }));
-  if (rows.length) await db.insertMany('dept', rows);
+  await insertDepts(db, [...want.entries()].filter(([k]) => !have.has(k)).map(([, p]) => p));
 }
-/** 학과 목록이 비어 있으면 명부에서 다시 만든다 (v1.4 전에 올린 명부). */
+/** 다른 요청이 같은 학과를 먼저 넣었으면 묶음 저장이 통째로 실패하므로, 그때는 하나씩 넣고 겹치는 것은 넘긴다 */
+async function insertDepts(db: Db, list: { district_id: string; name: string }[]) {
+  const rows = list.map((p) => ({ id: randomUUID(), district_id: p.district_id, name: p.name }));
+  if (!rows.length) return;
+  try { await db.insertMany('dept', rows); }
+  catch { for (const r of rows) await db.insert('dept', r).catch(() => undefined); }
+}
+
+const VOTER_PAGE = 1000, PAGES_AT_ONCE = 6;
+/**
+ * 선거인 전체에서 학과 목록을 다시 맞춘다: 없는 학과는 넣고, 명부에 없는 학과는 지운다.
+ * 2만여 행을 읽는 무거운 작업이라 명부 업로드를 마칠 때 한 번만 하고, 페이지를 6개씩 동시에 읽는다.
+ */
+export async function rebuildDepts(db: Db) {
+  const total = await db.count('voter', { batch_id: null });
+  const want = new Map<string, { district_id: string; name: string }>();
+  const offsets = Array.from({ length: Math.ceil(total / VOTER_PAGE) }, (_, i) => i * VOTER_PAGE);
+  for (let i = 0; i < offsets.length; i += PAGES_AT_ONCE) {
+    const pages = await Promise.all(offsets.slice(i, i + PAGES_AT_ONCE).map((o) => db.all<Voter>('voter', { batch_id: null }, 'id', VOTER_PAGE, o)));
+    for (const v of pages.flat()) {
+      const name = decrypt(v.dept_enc).trim();
+      if (name) want.set(`${v.district_id}\u0000${name}`, { district_id: v.district_id, name });
+    }
+  }
+  const have = await db.all<Dept>('dept');
+  const haveKeys = new Set(have.map((d) => `${d.district_id}\u0000${d.name}`));
+  const stale = have.filter((d) => !want.has(`${d.district_id}\u0000${d.name}`)).map((d) => d.id);
+  if (stale.length) await db.removeIds('dept', stale);
+  await insertDepts(db, [...want.entries()].filter(([k]) => !haveKeys.has(k)).map(([, p]) => p));
+  deptsCheckedAt = Date.now();
+}
+
+const DEPT_CHECK_MS = 5 * 60_000;
+let deptsCheckedAt = 0;
+let deptsBuilding: Promise<void> | null = null;
+/**
+ * 학과 목록이 비어 있을 때만 다시 만든다 (v1.4 이전에 올린 명부 대비).
+ * 같은 서버 인스턴스에서는 한 번에 하나만 돌고, 확인한 뒤 5분 동안은 다시 묻지 않는다.
+ */
 export async function ensureDepts(db: Db) {
-  if ((await db.count('dept')) > 0) return;
-  const voters = await db.all<Voter>('voter', { batch_id: null });
-  await addDepts(db, voters.map((v) => ({ district_id: v.district_id, name: decrypt(v.dept_enc).trim() })));
+  if (Date.now() - deptsCheckedAt < DEPT_CHECK_MS) return;
+  deptsBuilding ??= (async () => {
+    if ((await db.count('dept')) === 0) await rebuildDepts(db);
+    deptsCheckedAt = Date.now();
+  })().finally(() => { deptsBuilding = null; });
+  await deptsBuilding;
 }
 
 // ---------- 창구 고르기 (FR-107) ----------
