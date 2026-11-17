@@ -62,6 +62,25 @@ CREATE TABLE IF NOT EXISTS device_session (
   operator_name TEXT, operator_since TEXT, operator_pledged_at TEXT, revoked_at TEXT, user_agent TEXT);
 CREATE TABLE IF NOT EXISTS operator_log (
   id TEXT PRIMARY KEY, device_id TEXT NOT NULL, station_id TEXT NOT NULL, operator_name TEXT NOT NULL, started_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS desk (
+  id TEXT PRIMARY KEY, station_id TEXT NOT NULL, name TEXT NOT NULL, depts TEXT NOT NULL DEFAULT '[]',
+  is_all INTEGER NOT NULL DEFAULT 0, is_unassigned INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, created_by TEXT NOT NULL, merged_into TEXT);
+CREATE TABLE IF NOT EXISTS dept (
+  id TEXT PRIMARY KEY, district_id TEXT NOT NULL, name TEXT NOT NULL, UNIQUE(district_id, name));
+CREATE TABLE IF NOT EXISTS ballot_pad (
+  id TEXT PRIMARY KEY, station_id TEXT NOT NULL, desk_id TEXT NOT NULL, first_no INTEGER NOT NULL UNIQUE, last_no INTEGER NOT NULL,
+  used_no INTEGER, used_total INTEGER NOT NULL DEFAULT 0, by_count INTEGER NOT NULL DEFAULT 0,
+  opened_at TEXT NOT NULL, opened_by TEXT NOT NULL, device_id TEXT, exhausted_at TEXT);
+CREATE TABLE IF NOT EXISTS pad_reading (
+  id TEXT PRIMARY KEY, window_id TEXT NOT NULL, pad_id TEXT NOT NULL, last_no INTEGER, prev_total INTEGER NOT NULL,
+  used_total INTEGER NOT NULL, by_count INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS pad_move (
+  id TEXT PRIMARY KEY, pad_id TEXT NOT NULL, from_desk_id TEXT NOT NULL, to_desk_id TEXT NOT NULL, at TEXT NOT NULL,
+  operator_name TEXT NOT NULL, device_id TEXT);
+CREATE TABLE IF NOT EXISTS tag_issue (
+  id TEXT PRIMARY KEY, station_id TEXT NOT NULL, desk_id TEXT, window_id TEXT, pad_id TEXT, type TEXT NOT NULL,
+  serial_from INTEGER, serial_to INTEGER, count INTEGER NOT NULL DEFAULT 1, note TEXT, device_id TEXT, operator_name TEXT NOT NULL, at TEXT NOT NULL,
+  reviewed_by TEXT, reviewed_at TEXT, voided_by TEXT, voided_at TEXT, void_reason TEXT);
 `;
 
 /** 이전 버전 로컬 DB에 v1.1·v1.2 열을 더한다. */
@@ -78,6 +97,11 @@ const ADD_COLUMNS: [string, string, string][] = [
   ['ballot_event', 'device_id', 'TEXT'],
   ['tally_window', 'operator_name', 'TEXT'],
   ['voter_access_log', 'operator_name', 'TEXT'],
+  // v1.4 창구
+  ['ballot_event', 'desk_id', 'TEXT'],
+  ['tally_window', 'desk_id', 'TEXT'],
+  ['tally_window', 'pad_json', 'TEXT'],
+  ['device_session', 'desk_id', 'TEXT'],
 ];
 
 export function createSqliteDb(path: string): Db {
@@ -104,10 +128,10 @@ export function createSqliteDb(path: string): Db {
         if (!v || v.voted_at || v.batch_id) return { ok: false as const, voted_at: v?.voted_at ?? null, voted_station_id: v?.voted_station_id ?? null };
         run('UPDATE voter SET voted_at = ?, voted_station_id = ?, voted_event_id = ? WHERE id = ?', i.at, i.station_id, i.event_id, i.voter_id);
         const isLeave = v.kind === 'associate';
-        run(`INSERT INTO ballot_event (id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason, operator_name, device_id)
-             VALUES (?, ?, ?, ?, 'issue', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        run(`INSERT INTO ballot_event (id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason, operator_name, device_id, desk_id)
+             VALUES (?, ?, ?, ?, 'issue', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           i.event_id, i.voter_id, i.sid_hash, i.station_id, isLeave ? 1 : 0, i.at, i.actor_id, i.actor_name, i.window_id, i.source, i.reason,
-          i.operator_name ?? null, i.device_id ?? null);
+          i.operator_name ?? null, i.device_id ?? null, i.desk_id ?? null);
         return { ok: true as const, is_leave: isLeave };
       });
     },
@@ -120,19 +144,19 @@ export function createSqliteDb(path: string): Db {
           const w = one('SELECT status FROM tally_window WHERE id = ?', e.window_id);
           if (w?.status !== 'reconciling') return { ok: false as const, reason: 'window_closed' };
         }
-        run(`INSERT INTO ballot_event (id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason, operator_name, device_id)
-             VALUES (?, ?, ?, ?, 'cancel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        run(`INSERT INTO ballot_event (id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason, operator_name, device_id, desk_id)
+             VALUES (?, ?, ?, ?, 'cancel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           c.cancel_id, e.voter_id, e.voter_sid_hash, e.station_id, e.id, e.is_leave, c.at, c.actor_id, c.actor_name, e.window_id, e.source, c.reason,
-          c.operator_name ?? null, c.device_id ?? null);
+          c.operator_name ?? null, c.device_id ?? null, e.desk_id ?? null);
         run('UPDATE voter SET voted_at = NULL, voted_station_id = NULL, voted_event_id = NULL WHERE sid_hash = ? AND voted_event_id = ?', e.voter_sid_hash, e.id);
         return { ok: true as const };
       });
     },
-    async assignWindow(stationId, windowId, boundaryAt) {
+    async assignWindow(deskId, windowId, boundaryAt) {
       tx(() => {
-        run(`UPDATE ballot_event SET window_id = ? WHERE station_id = ? AND window_id IS NULL AND kind = 'issue' AND at <= ?`, windowId, stationId, boundaryAt);
-        run(`UPDATE ballot_event SET window_id = ? WHERE station_id = ? AND window_id IS NULL AND kind = 'cancel'
-             AND ref_event_id IN (SELECT id FROM ballot_event WHERE window_id = ?)`, windowId, stationId, windowId);
+        run(`UPDATE ballot_event SET window_id = ? WHERE desk_id = ? AND window_id IS NULL AND kind = 'issue' AND at <= ?`, windowId, deskId, boundaryAt);
+        run(`UPDATE ballot_event SET window_id = ? WHERE desk_id = ? AND window_id IS NULL AND kind = 'cancel'
+             AND ref_event_id IN (SELECT id FROM ballot_event WHERE window_id = ?)`, windowId, deskId, windowId);
       });
     },
     async windowCounts(windowId) {
@@ -141,10 +165,10 @@ export function createSqliteDb(path: string): Db {
       return { net: Number(r.net), leave_net: Number(r.leave_net) };
     },
     async liveCounts() {
-      return db.prepare(`SELECT station_id, SUM(${NET}) AS net, SUM(CASE WHEN is_leave = 1 THEN ${NET} ELSE 0 END) AS leave_net,
+      return db.prepare(`SELECT station_id, desk_id, SUM(${NET}) AS net, SUM(CASE WHEN is_leave = 1 THEN ${NET} ELSE 0 END) AS leave_net,
         SUM(CASE WHEN window_id IS NULL THEN ${NET} ELSE 0 END) AS open_net,
         SUM(CASE WHEN window_id IS NULL AND is_leave = 1 THEN ${NET} ELSE 0 END) AS open_leave_net
-        FROM ballot_event GROUP BY station_id`).all() as unknown as StationCounts[];
+        FROM ballot_event GROUP BY station_id, desk_id`).all() as unknown as StationCounts[];
     },
     async rosterCounts() {
       return db.prepare(`SELECT district_id, kind, COUNT(*) AS total, COUNT(voted_at) AS voted FROM voter WHERE batch_id IS NULL GROUP BY district_id, kind`).all() as unknown as RosterCount[];

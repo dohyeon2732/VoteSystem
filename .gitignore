@@ -5,3 +5,4 @@ dist
 data/*.sqlite
 data/*.sqlite-*
 .vercel
+data/*.txt

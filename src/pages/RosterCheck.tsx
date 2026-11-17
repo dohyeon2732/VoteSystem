@@ -10,6 +10,7 @@ import {
   api,
   ApiError,
   fmtHM,
+  fmtNo,
   fmtNum,
   type LookupResult,
   type RosterMe,
@@ -18,6 +19,14 @@ import {
 import { useStore } from "../app/store";
 import Pledge, { OperatorForm } from "../components/Pledge";
 import Sheet from "../components/Sheet";
+import {
+  IssueForm,
+  PadForm,
+  ReadingInputs,
+  readingsBody,
+  readingsTotal,
+  type ReadingState,
+} from "../components/DeskTools";
 
 const RESULT_TTL_MS = 30_000;
 const OWN_CANCEL_MS = 5 * 60_000;
@@ -39,7 +48,10 @@ export default function RosterCheck() {
   const [done, setDone] = useState<Done | null>(null);
   const [busy, setBusy] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
-  const [tags, setTags] = useState("");
+  const [readings, setReadings] = useState<ReadingState>({});
+  const [adminDesk, setAdminDesk] = useState("");
+  const [padMode, setPadMode] = useState<"add" | "receive" | null>(null);
+  const [issueOpen, setIssueOpen] = useState(false);
   const [mismatch, setMismatch] = useState<string | null>(null);
   const [missedMode, setMissedMode] = useState(false);
   const [elapsed, setElapsed] = useState<number | null>(null);
@@ -51,7 +63,7 @@ export default function RosterCheck() {
   const stationId = isAdmin ? adminStation : (rm?.station?.id ?? "");
   const operator = rm?.device?.operator_name ?? null;
   // 명부를 쓸 준비: 총관리자는 계정 서약, 투표소 기기는 담당자 서약 (FR-94)
-  const ready = isAdmin ? !!rm?.pledged_at : isStation ? !!rm?.device?.operator_pledged : false;
+  const ready = isAdmin ? !!rm?.pledged_at : isStation ? !!rm?.device?.operator_pledged && !!rm?.device?.desk_id : false;
 
   const loadMe = useCallback(async () => {
     try {
@@ -68,7 +80,7 @@ export default function RosterCheck() {
     try {
       setStatus(
         await api<StationStatus>(
-          `/roster/station?station_id=${encodeURIComponent(stationId)}`,
+          `/roster/station?station_id=${encodeURIComponent(stationId)}${isAdmin && adminDesk ? `&desk_id=${encodeURIComponent(adminDesk)}` : ""}`,
         ),
       );
       setErr(null);
@@ -76,7 +88,7 @@ export default function RosterCheck() {
       setErr((e as Error).message);
       setStatus(null);
     }
-  }, [stationId, ready]);
+  }, [stationId, ready, isAdmin, adminDesk]);
 
   useEffect(() => {
     loadMe();
@@ -144,7 +156,7 @@ export default function RosterCheck() {
               {rm.station.name} 투표소 · {rm.device?.device_no}번 기기
             </div>
           )}
-          <OperatorForm onDone={afterOperator} />
+          <OperatorForm currentDeskId={rm.device?.desk_id} onDone={afterOperator} />
         </div>
       </main>
     );
@@ -196,6 +208,7 @@ export default function RosterCheck() {
           body: {
             voter_id: result.voter_id,
             station_id: stationId,
+            desk_id: isAdmin ? adminDesk || undefined : undefined,
             id_checked: true,
             missed_window_id: missedMode ? status?.reconciling?.id : undefined,
           },
@@ -255,10 +268,10 @@ export default function RosterCheck() {
     setErr(null);
     try {
       await api("/roster/close", {
-        body: { station_id: stationId, operator_name: operator },
+        body: { station_id: stationId, operator_name: operator, desk_id: isAdmin ? adminDesk || undefined : undefined },
       });
       await loadStatus();
-      setTags("");
+      setReadings({});
       setMismatch(null);
       setCloseOpen(true);
     } catch (e2) {
@@ -274,7 +287,7 @@ export default function RosterCheck() {
     setMismatch(null);
     try {
       await api(`/roster/close/${status.reconciling.id}/submit`, {
-        body: { tag_count: Number(tags) },
+        body: { readings: readingsBody(status.pads, readings) },
       });
       setCloseOpen(false);
       setMissedMode(false);
@@ -290,6 +303,9 @@ export default function RosterCheck() {
   };
 
   const rec = status?.reconciling ?? null;
+  const pads = status?.pads ?? [];
+  const tagTotal = readingsTotal(pads, readings);
+  const deskArg = isAdmin ? adminDesk || undefined : undefined;
   const now = Date.now();
 
   return (
@@ -317,6 +333,7 @@ export default function RosterCheck() {
               value={adminStation}
               onChange={(e) => {
                 setAdminStation(e.target.value);
+                setAdminDesk("");
                 setResult(null);
               }}
             >
@@ -327,6 +344,27 @@ export default function RosterCheck() {
                 </option>
               ))}
             </select>
+            {status && (
+              <>
+                <label htmlFor="adm-desk" style={{ marginTop: 8 }}>창구</label>
+                <select
+                  id="adm-desk"
+                  className="input"
+                  value={adminDesk}
+                  onChange={(e) => {
+                    setAdminDesk(e.target.value);
+                    setResult(null);
+                  }}
+                >
+                  <option value="">창구 미지정</option>
+                  {status.desks.filter((d) => !d.is_unassigned).map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
           </div>
         ) : (
           rm.station && (
@@ -341,8 +379,8 @@ export default function RosterCheck() {
             >
               <div>
                 <div style={{ fontWeight: 700 }}>
-                  담당자: {operator} · {fmtHM(rm.device?.operator_since ?? null)}
-                  부터
+                  {rm.desk?.name} 창구 · 담당자: {operator} ·{" "}
+                  {fmtHM(rm.device?.operator_since ?? null)}부터
                 </div>
                 <div className="small muted">
                   {rm.device?.device_no}번 기기 · 로그인{" "}
@@ -374,7 +412,7 @@ export default function RosterCheck() {
             <div className="row between" style={{ alignItems: "flex-end" }}>
               <div>
                 <div style={{ fontSize: 20, fontWeight: 700 }}>
-                  {station.name}
+                  {station.name} · {status.desk.name}
                 </div>
                 <div className="small muted">
                   {district && district.name !== station.name
@@ -387,7 +425,7 @@ export default function RosterCheck() {
                 </div>
               </div>
               <div className="right" style={{ textAlign: "right" }}>
-                <div className="small muted">이번 구간</div>
+                <div className="small muted">이 창구의 이번 구간</div>
                 <div style={{ fontSize: 24, fontWeight: 800 }}>
                   {fmtNum(status.open_count)}명
                 </div>
@@ -404,12 +442,12 @@ export default function RosterCheck() {
                 <button
                   className="btn sm primary"
                   onClick={() => {
-                    setTags("");
+                    setReadings({});
                     setMismatch(null);
                     setCloseOpen(true);
                   }}
                 >
-                  꼬리표 입력
+                  묶음 번호 입력
                 </button>
               </div>
             ) : (
@@ -421,6 +459,65 @@ export default function RosterCheck() {
                 꼬리표 마감 (매 정각 / 근무자 교대 직전)
               </button>
             )}
+            {/* 묶음 (FR-100): 번호로 마감하려면 쓰는 묶음이 등록되어 있어야 한다 */}
+            <div className="stack" style={{ gap: 6 }}>
+              <div className="row between">
+                <strong>쓰는 중인 묶음</strong>
+                <span className="small muted">
+                  {status.issue_count > 0 ? `신고한 이슈 ${status.issue_count}건` : ""}
+                </span>
+              </div>
+              {pads.length === 0 ? (
+                <div className="alert warn small">
+                  묶음을 등록하세요. 새 묶음을 쓰기 직전에 "묶음 추가"로 첫 번호를 넣습니다. 등록하지 않아도 불출은 되지만 마감은 할 수 없습니다.
+                </div>
+              ) : (
+                <div className="list">
+                  {pads.map((p) => (
+                    <div key={p.id} className="list-item">
+                      <div>
+                        <div className="title">{p.label}</div>
+                        <div className="sub">
+                          {p.used_total > 0
+                            ? `직전 마감 ${p.by_count || p.used_no === null ? `${p.used_total}장` : fmtNo(p.used_no)} · ${p.used_total}장 사용`
+                            : "아직 마감 전"}
+                        </div>
+                      </div>
+                      <div className="right">
+                        {p.used_total === 0 && !rec && (
+                          <button
+                            className="btn sm ghost"
+                            disabled={busy}
+                            onClick={async () => {
+                              if (!window.confirm(`묶음 ${p.label} 등록을 지울까요?`)) return;
+                              try {
+                                await api(`/roster/pads/${p.id}?station_id=${encodeURIComponent(stationId)}`, { method: "DELETE" });
+                                await loadStatus();
+                              } catch (e2) {
+                                setErr((e2 as Error).message);
+                              }
+                            }}
+                          >
+                            삭제
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                <button className="btn sm" onClick={() => setPadMode("add")}>
+                  묶음 추가
+                </button>
+                <button className="btn sm ghost" onClick={() => setPadMode("receive")}>
+                  묶음 받기
+                </button>
+                <button className="btn sm ghost" onClick={() => setIssueOpen(true)}>
+                  이슈 신고
+                </button>
+              </div>
+            </div>
           </>
         )}
       </div>
@@ -508,6 +605,14 @@ export default function RosterCheck() {
                   {result.kind === "regular" ? "정회원" : "준회원(휴학)"}
                 </span>
               </div>
+              {result.desk_warning && (
+                <div className="alert warn" role="alert">
+                  <strong>{result.desk_warning.dept} 학생입니다.</strong>{" "}
+                  {result.desk_warning.desk_name
+                    ? `${result.desk_warning.desk_name} 창구로 안내하세요.`
+                    : "이 창구가 맡는 학과가 아닙니다."}
+                </div>
+              )}
               {result.kind === "associate" && (
                 <div className="alert warn small">
                   휴학생 · 투표하면 재학생 명단(유권자)에 편입됩니다.
@@ -624,6 +729,7 @@ export default function RosterCheck() {
         {operatorOpen && (
           <OperatorForm
             current={operator}
+            currentDeskId={rm.device?.desk_id}
             onDone={afterOperator}
             onCancel={() => setOperatorOpen(false)}
           />
@@ -684,17 +790,26 @@ export default function RosterCheck() {
                 <span>{rec.leave_net}명</span>
               </div>
             )}
-            <div className="field">
-              <label htmlFor="tags">꼬리표 수</label>
-              <input
-                id="tags"
-                className="input big"
-                inputMode="numeric"
-                value={tags}
-                onChange={(e) => setTags(e.target.value.replace(/[^0-9]/g, ""))}
-                autoFocus
-              />
+            {pads.length === 0 ? (
+              <div className="alert warn small">
+                {rec.net > 0
+                  ? '등록된 묶음이 없습니다. 이 창을 닫고 "묶음 추가"로 쓰는 묶음을 등록한 뒤 다시 여세요.'
+                  : "체크가 없는 구간입니다. 그대로 저장하면 됩니다."}
+              </div>
+            ) : (
+              <ReadingInputs pads={pads} value={readings} onChange={(v) => { setReadings(v); setMismatch(null); }} />
+            )}
+            <div className="row between">
+              <span className="muted">계산된 꼬리표 수</span>
+              <strong style={{ fontSize: 22 }}>
+                {tagTotal === null ? "-" : `${fmtNum(tagTotal)}장`}
+              </strong>
             </div>
+            {status && status.window_issues.length > 0 && (
+              <div className="small muted">
+                이 구간에 신고된 이슈 {status.window_issues.length}건
+              </div>
+            )}
             {mismatch && (
               <div className="alert danger">
                 <strong>{mismatch}</strong>
@@ -702,7 +817,7 @@ export default function RosterCheck() {
                   className="small"
                   style={{ margin: "6px 0 0", paddingLeft: 18 }}
                 >
-                  <li>꼬리표를 다시 세어 보세요.</li>
+                  <li>묶음의 마지막 꼬리표 번호를 다시 확인하세요.</li>
                   <li>
                     체크 없이 용지를 준 학생이 있으면 아래 "누락분 추가"로 그
                     학번을 체크하세요.
@@ -712,15 +827,15 @@ export default function RosterCheck() {
                     총관리자).
                   </li>
                   <li>
-                    꼬리표 분실 등으로 맞출 수 없으면 총관리자에게 조정을
-                    요청하세요.
+                    그래도 맞지 않으면 "이슈 신고"로 사유를 남기고 총관리자에게
+                    조정을 요청하세요.
                   </li>
                 </ul>
               </div>
             )}
             <button
               className="btn primary block"
-              disabled={busy || tags === ""}
+              disabled={busy || tagTotal === null || (pads.length === 0 && rec.net > 0)}
               onClick={submitTags}
             >
               대조 저장
@@ -743,6 +858,36 @@ export default function RosterCheck() {
               </Link>
             )}
           </div>
+        )}
+      </Sheet>
+      <Sheet
+        open={padMode !== null}
+        onClose={() => setPadMode(null)}
+        title={padMode === "receive" ? "묶음 받기" : "묶음 추가"}
+      >
+        {padMode && (
+          <PadForm
+            mode={padMode}
+            stationId={stationId}
+            deskId={deskArg}
+            onDone={() => {
+              setPadMode(null);
+              loadStatus();
+            }}
+          />
+        )}
+      </Sheet>
+      <Sheet open={issueOpen} onClose={() => setIssueOpen(false)} title="꼬리표 이슈 신고">
+        {issueOpen && (
+          <IssueForm
+            stationId={stationId}
+            deskId={deskArg}
+            pads={pads}
+            onDone={() => {
+              setIssueOpen(false);
+              loadStatus();
+            }}
+          />
         )}
       </Sheet>
     </main>

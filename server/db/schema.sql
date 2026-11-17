@@ -1,4 +1,4 @@
--- Supabase SQL 편집기에서 실행하세요. 여러 번 실행해도 안전합니다 (v1.1 선거인명부, v1.2 투표소 계정 추가분 포함).
+-- Supabase SQL 편집기에서 실행하세요. 여러 번 실행해도 안전합니다 (v1.1 선거인명부, v1.2 투표소 계정, v1.4 창구·묶음·이슈 추가분 포함).
 create table if not exists election (
   id text primary key, name text not null, threshold_pct numeric not null default 50,
   extension_enabled boolean not null default false, input_locked boolean not null default false,
@@ -104,6 +104,45 @@ create index if not exists ballot_event_device_idx on ballot_event(device_id, at
 alter table device_session enable row level security;
 alter table operator_log enable row level security;
 
+-- ============================================================
+-- v1.4 창구 단위 대조·꼬리표 일련번호·이슈 신고 (2026-11-16 추가)
+-- ============================================================
+alter table ballot_event add column if not exists desk_id text;
+alter table tally_window add column if not exists desk_id text;
+alter table tally_window add column if not exists pad_json text;
+alter table device_session add column if not exists desk_id text;
+create table if not exists desk (
+  id text primary key, station_id text not null, name text not null, depts text not null default '[]',
+  is_all boolean not null default false, is_unassigned boolean not null default false,
+  created_at text not null, created_by text not null, merged_into text);
+create index if not exists desk_station_idx on desk(station_id);
+create table if not exists dept (
+  id text primary key, district_id text not null, name text not null, unique(district_id, name));
+create table if not exists ballot_pad (
+  id text primary key, station_id text not null, desk_id text not null, first_no int not null unique, last_no int not null,
+  used_no int, used_total int not null default 0, by_count boolean not null default false,
+  opened_at text not null, opened_by text not null, device_id text, exhausted_at text);
+create index if not exists ballot_pad_desk_idx on ballot_pad(desk_id);
+create table if not exists pad_reading (
+  id text primary key, window_id text not null, pad_id text not null, last_no int, prev_total int not null,
+  used_total int not null, by_count boolean not null default false);
+create index if not exists pad_reading_window_idx on pad_reading(window_id);
+create table if not exists pad_move (
+  id text primary key, pad_id text not null, from_desk_id text not null, to_desk_id text not null, at text not null,
+  operator_name text not null, device_id text);
+create table if not exists tag_issue (
+  id text primary key, station_id text not null, desk_id text, window_id text, pad_id text, type text not null,
+  serial_from int, serial_to int, count int not null default 1, note text, device_id text, operator_name text not null, at text not null,
+  reviewed_by text, reviewed_at text, voided_by text, voided_at text, void_reason text);
+create index if not exists tag_issue_station_idx on tag_issue(station_id, at);
+create index if not exists ballot_event_desk_idx on ballot_event(desk_id, window_id);
+alter table desk enable row level security;
+alter table dept enable row level security;
+alter table ballot_pad enable row level security;
+alter table pad_reading enable row level security;
+alter table pad_move enable row level security;
+alter table tag_issue enable row level security;
+
 -- 체크 기록은 추가만 가능: 삭제 금지, 수정은 비어 있는 구간 번호(window_id)를 한 번 채우는 것만 허용.
 -- 체크 기록 초기화·파기 함수만 vote.allow_purge 를 켜고 지울 수 있다.
 create or replace function ballot_event_guard() returns trigger language plpgsql as $$
@@ -130,10 +169,10 @@ begin
     return jsonb_build_object('ok', false, 'voted_at', v_at, 'voted_station_id', v_st);
   end if;
   insert into ballot_event(id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason,
-                           operator_name, device_id)
+                           operator_name, device_id, desk_id)
   values (p->>'event_id', p->>'voter_id', p->>'sid_hash', p->>'station_id', 'issue', null, v_kind = 'associate',
           p->>'at', p->>'actor_id', p->>'actor_name', p->>'window_id', p->>'source', p->>'reason',
-          p->>'operator_name', p->>'device_id');
+          p->>'operator_name', p->>'device_id', p->>'desk_id');
   return jsonb_build_object('ok', true, 'is_leave', v_kind = 'associate');
 end $$;
 
@@ -150,21 +189,23 @@ begin
     if w_status is distinct from 'reconciling' then return jsonb_build_object('ok', false, 'reason', 'window_closed'); end if;
   end if;
   insert into ballot_event(id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason,
-                           operator_name, device_id)
+                           operator_name, device_id, desk_id)
   values (p->>'cancel_id', e.voter_id, e.voter_sid_hash, e.station_id, 'cancel', e.id, e.is_leave,
           p->>'at', p->>'actor_id', p->>'actor_name', e.window_id, e.source, p->>'reason',
-          p->>'operator_name', p->>'device_id');
+          p->>'operator_name', p->>'device_id', e.desk_id);
   update voter set voted_at = null, voted_station_id = null, voted_event_id = null
     where sid_hash = e.voter_sid_hash and voted_event_id = e.id;
   return jsonb_build_object('ok', true);
 end $$;
 
-create or replace function vote_assign_window(p_station text, p_window text, p_boundary text) returns void language plpgsql as $$
+-- v1.4: 구간 배정은 창구 단위. 매개변수 이름이 바뀌어 예전 함수는 먼저 지운다.
+drop function if exists vote_assign_window(text, text, text);
+create or replace function vote_assign_window(p_desk text, p_window text, p_boundary text) returns void language plpgsql as $$
 begin
   update ballot_event set window_id = p_window
-    where station_id = p_station and window_id is null and kind = 'issue' and at <= p_boundary;
+    where desk_id = p_desk and window_id is null and kind = 'issue' and at <= p_boundary;
   update ballot_event c set window_id = p_window
-    where c.station_id = p_station and c.window_id is null and c.kind = 'cancel'
+    where c.desk_id = p_desk and c.window_id is null and c.kind = 'cancel'
       and c.ref_event_id in (select id from ballot_event where window_id = p_window);
 end $$;
 
@@ -177,12 +218,12 @@ $$;
 
 create or replace function vote_live_counts() returns jsonb language sql stable as $$
   select coalesce(jsonb_agg(t), '[]'::jsonb) from (
-    select station_id,
+    select station_id, desk_id,
       sum(case when kind = 'issue' then 1 else -1 end)::int as net,
       sum(case when is_leave then (case when kind = 'issue' then 1 else -1 end) else 0 end)::int as leave_net,
       sum(case when window_id is null then (case when kind = 'issue' then 1 else -1 end) else 0 end)::int as open_net,
       sum(case when window_id is null and is_leave then (case when kind = 'issue' then 1 else -1 end) else 0 end)::int as open_leave_net
-    from ballot_event group by station_id) t
+    from ballot_event group by station_id, desk_id) t
 $$;
 
 create or replace function vote_roster_counts() returns jsonb language sql stable as $$

@@ -4,7 +4,8 @@ import {
   COOKIE, HttpError, TIME_RE, cookieHeader, int, loadConfig, log, requireAdmin, requireAuth, requirePerson, route, routes, slotKey, str,
   type ApiRequest, type ApiResponse,
 } from './core.js';
-import { assertNotElectionDay, deviceView, invalidatePlaces, resyncAllEntries, rosterActive, tallyExtras } from './roster.js';
+import { assertNotElectionDay, deviceView, invalidatePlaces, resyncAllEntries, rosterActive, slotBlockers, tallyExtras } from './roster.js';
+import './desks.js';
 import { STATION_PATHS, createDevice, revokeDevice, touchDevice } from './stations.js';
 import type {
   AuditLog, ChangeRequest, Db, DeviceSession, District, Election, ElectionDay, Entry, Member, Slot, Station,
@@ -82,7 +83,9 @@ route('GET', '/tally', async (ctx) => {
   const points = computeTally({ ...cfg, entries, extensionEnabled: cfg.election.extension_enabled });
   const pending = ctx.member!.role === 'admin' ? (await ctx.db.all<ChangeRequest>('change_request', { status: 'pending' })).length : 0;
   const roster = await tallyExtras(ctx.db, cfg.days, cfg.stations, cfg.election.extension_enabled);
-  return { election: cfg.election, points, pending_requests: pending, roster, server_now: nowIso() };
+  // 미확인 꼬리표 이슈 수 (FR-105). v1.4 테이블이 아직 없으면 0
+  const openIssues = ctx.member!.role === 'admin' ? await ctx.db.count('tag_issue', { reviewed_at: null, voided_at: null }).catch(() => 0) : 0;
+  return { election: cfg.election, points, pending_requests: pending, open_issues: openIssues, roster, server_now: nowIso() };
 });
 
 // ---------- Entries ----------
@@ -172,6 +175,9 @@ route('POST', '/slots/confirm', async (ctx) => {
     const missing = cfg.slots.filter((s) => slotIds.includes(s.id) && !entries.some((e) => e.slot_id === s.id))
       .map((s) => cfg.stations.find((st) => st.id === s.station_id)?.name ?? '');
     if (missing.length) throw new HttpError(409, 'not_reconciled', `꼬리표 대조가 끝나지 않은 투표소가 있어 확정할 수 없습니다: ${missing.join(', ')}`);
+    // v1.4 (FR-109): 그 시점 범위에 마감하지 않은 창구가 하나라도 있으면 확정할 수 없다
+    const blockers = await slotBlockers(ctx.db, cfg.stations, date, time);
+    if (blockers.length) throw new HttpError(409, 'not_reconciled', `마감이 끝나지 않은 창구가 있어 확정할 수 없습니다: ${blockers.join(', ')}`);
   }
   let n = 0;
   for (const slotId of slotIds) {

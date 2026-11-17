@@ -11,9 +11,10 @@ export default function Layout() {
   const isStation = me?.role === 'station';
   // 승인 대기 배지는 총관리자만 (투표소 계정은 /tally를 쓸 수 없음)
   const { data } = usePolling(
-    () => (me?.role === 'admin' ? api<{ pending_requests: number }>('/tally') : Promise.resolve({ pending_requests: 0 })), 30000, [me?.id, me?.role],
+    () => (me?.role === 'admin' ? api<{ pending_requests: number; open_issues?: number }>('/tally') : Promise.resolve({ pending_requests: 0, open_issues: 0 })), 30000, [me?.id, me?.role],
   );
   const pending = data?.pending_requests ?? 0;
+  const openIssues = data?.open_issues ?? 0;
   const auto = useSyncExternalStore(subscribeAutoBackup, getAutoBackup);
   const logout = async () => { stopAutoBackup(); await api('/logout', { method: 'POST', body: {} }); setMe(null); nav('/login'); };
   const cls = ({ isActive }: { isActive: boolean }) => (isActive ? 'active' : '');
@@ -39,6 +40,7 @@ export default function Layout() {
                 <NavLink to="/notice" className={cls}>공지</NavLink>
                 <NavLink to="/admin/roster" className={cls}>선거인명부</NavLink>
                 <NavLink to="/admin/stations" className={cls}>투표소 계정</NavLink>
+                <NavLink to="/admin/issues" className={cls}>창구·이슈{openIssues > 0 && <span className="badge">{openIssues}</span>}</NavLink>
                 <NavLink to="/admin/settings" className={cls}>설정</NavLink>
                 <NavLink to="/admin/members" className={cls}>위원</NavLink>
                 <NavLink to="/log" className={cls}>로그</NavLink>

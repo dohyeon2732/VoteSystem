@@ -27,13 +27,15 @@ export interface IssueInput {
   actor_id: string; actor_name: string; source: BallotSource; window_id: string | null; reason: string | null;
   /** 투표소 기기의 담당자와 기기 (v1.2). 총관리자는 null */
   operator_name: string | null; device_id: string | null;
+  /** 창구 (v1.4) */
+  desk_id: string | null;
 }
 export type IssueResult = { ok: true; is_leave: boolean } | { ok: false; voted_at: string | null; voted_station_id: string | null };
 export interface CancelInput {
   cancel_id: string; issue_id: string; at: string; actor_id: string; actor_name: string; reason: string;
   operator_name: string | null; device_id: string | null;
 }
-export interface StationCounts { station_id: string; net: number; leave_net: number; open_net: number; open_leave_net: number }
+export interface StationCounts { station_id: string; desk_id: string | null; net: number; leave_net: number; open_net: number; open_leave_net: number }
 export interface RosterCount { district_id: string; kind: VoterKind; total: number; voted: number }
 
 export interface VoteOps {
@@ -41,11 +43,11 @@ export interface VoteOps {
   issue(input: IssueInput): Promise<IssueResult>;
   /** 불출 기록을 취소 기록으로 상쇄하고 투표 상태를 푼다. 실패 시 이유 문자열. */
   cancel(input: CancelInput): Promise<{ ok: true } | { ok: false; reason: string }>;
-  /** 열린 체크(구간 미배정)를 경계 시각까지 window에 배정한다. */
-  assignWindow(stationId: string, windowId: string, boundaryAt: string): Promise<void>;
+  /** 그 창구의 열린 체크(구간 미배정)를 경계 시각까지 window에 배정한다 (v1.4: 창구 단위). */
+  assignWindow(deskId: string, windowId: string, boundaryAt: string): Promise<void>;
   /** 구간의 순 체크 인원(불출 − 취소)과 그중 준회원. */
   windowCounts(windowId: string): Promise<{ net: number; leave_net: number }>;
-  /** 투표소별 실시간 집계. */
+  /** 투표소 × 창구별 실시간 집계. */
   liveCounts(): Promise<StationCounts[]>;
   /** 선거구 × 종류별 명부 인원과 투표 인원. */
   rosterCounts(): Promise<RosterCount[]>;
@@ -65,6 +67,9 @@ export const BOOL_COLUMNS: Record<string, string[]> = {
   member: ['active'],
   entry: ['confirmed'],
   ballot_event: ['is_leave'],
+  desk: ['is_all', 'is_unassigned'],
+  ballot_pad: ['by_count'],
+  pad_reading: ['by_count'],
 };
 
 export const TABLES = [
@@ -84,6 +89,12 @@ export const TABLES = [
   'voter_access_log',
   'device_session',
   'operator_log',
+  'desk',
+  'dept',
+  'ballot_pad',
+  'pad_reading',
+  'pad_move',
+  'tag_issue',
 ] as const;
 
 // ---- Row types ----
@@ -144,6 +155,7 @@ export interface BallotEvent {
   id: string; voter_id: string; voter_sid_hash: string; station_id: string; kind: 'issue' | 'cancel'; ref_event_id: string | null;
   is_leave: boolean; at: string; actor_id: string; actor_name: string; window_id: string | null; source: BallotSource; reason: string | null;
   operator_name?: string | null; device_id?: string | null; // v1.2
+  desk_id?: string | null; // v1.4
 }
 export interface TallyWindow {
   id: string; station_id: string; date: string; opened_at: string; boundary_at: string;
@@ -152,6 +164,9 @@ export interface TallyWindow {
   adjustment: number; adjust_reason: string | null;
   closed_by: string; closed_by_name: string; matched_at: string | null; matched_by_name: string | null;
   operator_name?: string | null; // v1.2: 마감을 누른 투표소 기기의 담당자
+  desk_id?: string | null; // v1.4
+  /** 마지막으로 넣은 묶음 번호 (JSON). 불일치 때 총관리자 조정 화면에 보여 준다 */
+  pad_json?: string | null;
 }
 export interface Shift { id: string; member_id: string; station_id: string; date: string; start_time: string; end_time: string }
 export interface VoterAccessLog {
@@ -166,5 +181,31 @@ export interface DeviceSession {
   created_at: string; expires_at: string; last_seen_at: string;
   operator_name: string | null; operator_since: string | null; operator_pledged_at: string | null;
   revoked_at: string | null; user_agent: string | null;
+  desk_id?: string | null; // v1.4
 }
 export interface OperatorLog { id: string; device_id: string; station_id: string; operator_name: string; started_at: string }
+
+// ---- 창구·묶음·이슈 (v1.4, 명세 15.13) ----
+export interface Desk {
+  id: string; station_id: string; name: string;
+  /** 맡는 학과 목록 (JSON 배열) */
+  depts: string;
+  is_all: boolean; is_unassigned: boolean; created_at: string; created_by: string; merged_into: string | null;
+}
+/** 선거구별 학과 목록 (명부 업로드 때 만든다. 창구 고르기용) */
+export interface Dept { id: string; district_id: string; name: string }
+export interface BallotPad {
+  id: string; station_id: string; desk_id: string; first_no: number; last_no: number;
+  /** 마지막 일치 마감 때의 번호와 누적 사용 장수 */
+  used_no: number | null; used_total: number; by_count: boolean;
+  opened_at: string; opened_by: string; device_id: string | null; exhausted_at: string | null;
+}
+export interface PadReading { id: string; window_id: string; pad_id: string; last_no: number | null; prev_total: number; used_total: number; by_count: boolean }
+export interface PadMove { id: string; pad_id: string; from_desk_id: string; to_desk_id: string; at: string; operator_name: string; device_id: string | null }
+export type IssueType = 'void' | 'lost' | 'damaged' | 'unreadable' | 'pad_defect' | 'other';
+export interface TagIssue {
+  id: string; station_id: string; desk_id: string | null; window_id: string | null; pad_id: string | null; type: IssueType;
+  serial_from: number | null; serial_to: number | null; count: number; note: string | null;
+  device_id: string | null; operator_name: string; at: string;
+  reviewed_by: string | null; reviewed_at: string | null; voided_by: string | null; voided_at: string | null; void_reason: string | null;
+}

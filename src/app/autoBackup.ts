@@ -10,7 +10,8 @@ import { runSilently } from './loading';
 const INTERVAL_MS = 30 * 60_000;
 const RETRY_MS = 5 * 60_000;
 
-interface BackupPage { events: Record<string, unknown>[]; windows: Record<string, unknown>[]; total: number; page: number }
+type Row = Record<string, unknown>;
+interface BackupPage { events: Row[]; windows: Row[]; desks?: Row[]; pads?: Row[]; readings?: Row[]; moves?: Row[]; issues?: Row[]; total: number; page: number }
 
 export interface AutoBackupState {
   on: boolean;
@@ -48,14 +49,17 @@ export async function buildBackupCsv(stationList: Station[]): Promise<{ csv: str
   const seen = new Set<unknown>();
   const events: Record<string, unknown>[] = [];
   let windows: Record<string, unknown>[] = [];
+  // v1.4 부가 자료 (FR-106): 창구·묶음·마감별 번호·묶음 이동·이슈
+  const extra: [string, Row[]][] = [];
   for (let offset = 0; ; ) {
     const p = await api<BackupPage>(`/roster/backup/data?offset=${offset}`);
-    if (offset === 0) windows = p.windows;
+    if (offset === 0) { windows = p.windows; extra.push(['창구', p.desks ?? []], ['묶음', p.pads ?? []], ['묶음번호', p.readings ?? []], ['묶음이동', p.moves ?? []], ['이슈', p.issues ?? []]); }
     for (const e of p.events) if (!seen.has(e.id)) { seen.add(e.id); events.push(e); }
     offset += p.events.length;
     if (p.events.length < p.page) break;
   }
   const rows: unknown[][] = [['구분', '시각', '투표소', '종류', '학번해시', '구간', '데이터']];
+  for (const [label, list] of extra) for (const x of list) rows.push([label, x.at ?? x.opened_at ?? x.created_at ?? '', sname(x.station_id), x.type ?? '', '', x.window_id ?? '', JSON.stringify(x)]);
   for (const w of windows) rows.push(['마감', w.boundary_at, sname(w.station_id), w.status, '', w.id, JSON.stringify(w)]);
   for (const e of events) rows.push(['체크', e.at, sname(e.station_id), e.kind, e.voter_sid_hash, e.window_id ?? '', JSON.stringify(e)]);
   return { csv: toCsv(rows), events: events.length, windows: windows.length };

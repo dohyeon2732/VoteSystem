@@ -203,7 +203,7 @@ export default function AdminRoster() {
   const [cancelSid, setCancelSid] = useState({ sid: '', reason: '' });
   const [resetText, setResetText] = useState('');
   const [restoreText, setRestoreText] = useState('');
-  const [restoreFile, setRestoreFile] = useState<{ windows: unknown[]; events: unknown[] } | null>(null);
+  const [restoreFile, setRestoreFile] = useState<{ windows: unknown[]; events: unknown[]; extra: Record<string, unknown[]> } | null>(null);
   const [sheetDate, setSheetDate] = useState(kstToday());
   const [sheetRows, setSheetRows] = useState<Record<string, string>[] | null>(null);
   const [sheetPreview, setSheetPreview] = useState<{ index: number; sid: string; station: string | null; at: string | null; status: string }[] | null>(null);
@@ -243,13 +243,16 @@ export default function AdminRoster() {
       if (di < 0 || ki < 0) throw new Error('체크 기록 백업 파일이 아닙니다.');
       const windows = rows.slice(1).filter((r) => r[ki] === '마감').map((r) => JSON.parse(r[di]));
       const events = rows.slice(1).filter((r) => r[ki] === '체크').map((r) => JSON.parse(r[di]));
-      setRestoreFile({ windows, events });
+      const pick = (k: string) => rows.slice(1).filter((r) => r[ki] === k).map((r) => JSON.parse(r[di]));
+      setRestoreFile({ windows, events, extra: { desks: pick('창구'), pads: pick('묶음'), readings: pick('묶음번호'), moves: pick('묶음이동'), issues: pick('이슈') } });
     } catch (e) { setMsg({ text: (e as Error).message, ok: false }); }
   };
   const doRestore = () => run(async () => {
     if (!restoreFile) return;
-    const { windows, events } = restoreFile;
+    const { windows, events, extra } = restoreFile;
     let first = true;
+    // 창구·묶음·이슈는 첫 요청에 함께 보낸다 (FR-106)
+    await api('/roster/restore/chunk', { body: { first, windows: [], events: [], ...extra } }); first = false;
     for (let i = 0; i < windows.length; i += 1000) { await api('/roster/restore/chunk', { body: { first, windows: windows.slice(i, i + 1000), events: [] } }); first = false; }
     for (let i = 0; i < events.length; i += 1000) { await api('/roster/restore/chunk', { body: { first, windows: [], events: events.slice(i, i + 1000) } }); first = false; }
     const r = await api<{ voted: number }>('/roster/restore/finish', { body: { confirm: '복원' } });
@@ -263,10 +266,10 @@ export default function AdminRoster() {
     try {
       const t = await readTable(file);
       const h = t[0] ?? [];
-      const idx = { sid: guess(h, ['학번']), time: guess(h, ['시각', '시간']), station: guess(h, ['투표소']), recorder: guess(h, ['기록자', '위원']), date: guess(h, ['날짜', '일자']) };
+      const idx = { sid: guess(h, ['학번']), time: guess(h, ['시각', '시간']), station: guess(h, ['투표소']), recorder: guess(h, ['기록자', '위원']), date: guess(h, ['날짜', '일자']), desk: guess(h, ['창구']) };
       if (idx.sid < 0 || idx.time < 0 || idx.station < 0) throw new Error('학번·시각·투표소 열이 있어야 합니다. 시스템에서 받은 양식을 쓰세요.');
       const rows = t.slice(1).map((r) => ({
-        sid: r[idx.sid] ?? '', time: toHM(r[idx.time] ?? ''), station: r[idx.station] ?? '', recorder: idx.recorder >= 0 ? r[idx.recorder] ?? '' : '',
+        sid: r[idx.sid] ?? '', time: toHM(r[idx.time] ?? ''), station: r[idx.station] ?? '', recorder: idx.recorder >= 0 ? r[idx.recorder] ?? '' : '', desk: idx.desk >= 0 ? (r[idx.desk] ?? '').trim() : '',
         date: idx.date >= 0 && r[idx.date] ? toYMD(r[idx.date]) : sheetDate,
       }));
       setSheetRows(rows);
@@ -399,7 +402,7 @@ export default function AdminRoster() {
           <input type="file" accept=".csv" onChange={(e) => { onRestoreFile(e.target.files?.[0]); e.target.value = ''; }} />
           {restoreFile && (
             <div className="row">
-              <span className="small">마감 {restoreFile.windows.length}건 · 체크 {restoreFile.events.length}건</span>
+              <span className="small">창구 {restoreFile.extra.desks.length}곳 · 묶음 {restoreFile.extra.pads.length}개 · 이슈 {restoreFile.extra.issues.length}건 · 마감 {restoreFile.windows.length}건 · 체크 {restoreFile.events.length}건</span>
               <input className="input" style={{ maxWidth: 140 }} placeholder="복원 이라고 입력" value={restoreText} onChange={(e) => setRestoreText(e.target.value)} />
               <button className="btn" disabled={busy || restoreText.trim() !== '복원'} onClick={doRestore}>복원 실행</button>
             </div>
@@ -409,7 +412,7 @@ export default function AdminRoster() {
         <div className="card stack">
           <h1>장애 기록 시트</h1>
           <p className="muted small">시스템이 끊기면 위원은 학생증의 학번을 빈 시트에 적고 용지를 줍니다. <strong>시트에 명부를 넣지 마세요.</strong> 복구 후 시트를 CSV로 내려받아 여기에 올리면 중복·미등재를 걸러 반영하고, 반영분은 다음 꼬리표 마감에서 대조됩니다.</p>
-          <button className="btn" onClick={() => downloadText('장애기록시트_양식.csv', toCsv([['학번', '시각', '투표소', '기록자'], ['', '13:05', config.stations[0]?.name ?? '', '']]))}>빈 양식 CSV 내려받기</button>
+          <button className="btn" onClick={() => downloadText('장애기록시트_양식.csv', toCsv([['학번', '시각', '투표소', '창구', '기록자'], ['', '13:05', config.stations[0]?.name ?? '', '', '']]))}>빈 양식 CSV 내려받기</button>
           <div className="form-row">
             <div className="field" style={{ flex: '0 0 auto' }}><label>날짜 (시트에 날짜 열이 없을 때)</label><input className="input" type="date" value={sheetDate} onChange={(e) => setSheetDate(e.target.value)} /></div>
           </div>
@@ -428,9 +431,9 @@ export default function AdminRoster() {
                 </div>
               )}
               <button className="btn primary" disabled={busy || !sheetPreview.some((r) => r.status === 'ok')} onClick={() => run(async () => {
-                const r = await api<{ applied: number; failed: number }>('/roster/sheet/apply', { body: { rows: sheetRows } });
+                const r = await api<{ applied: number; failed: number; unassigned?: number }>('/roster/sheet/apply', { body: { rows: sheetRows } });
                 setSheetPreview(null); setSheetRows(null);
-                setMsg({ text: `장애 시트 ${r.applied}명을 반영했습니다.${r.failed ? ` (그사이 이미 투표 ${r.failed}명)` : ''}`, ok: true });
+                setMsg({ text: `장애 시트 ${r.applied}명을 반영했습니다.${r.failed ? ` (그사이 이미 투표 ${r.failed}명)` : ''}${r.unassigned ? ` 창구가 비었거나 맞지 않는 ${r.unassigned}명은 "창구 미지정"으로 들어갔습니다. 대조 화면에서 조정하세요.` : ''}`, ok: true });
               })}>정상 {sheetPreview.filter((r) => r.status === 'ok').length}명 반영</button>
             </div>
           )}

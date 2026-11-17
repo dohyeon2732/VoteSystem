@@ -17,6 +17,9 @@ export const STATION_PATHS: { method: string; re: RegExp }[] = [
   ['GET', '/roster/me'], ['POST', '/roster/operator'], ['POST', '/roster/lookup'], ['POST', '/roster/issue'],
   ['POST', '/roster/cancel'], ['GET', '/roster/station'], ['POST', '/roster/close'], ['POST', '/roster/close/[^/]+/submit'],
   ['GET', '/roster/windows'],
+  // v1.4 창구·묶음·이슈
+  ['GET', '/roster/desks'], ['POST', '/roster/pads'], ['POST', '/roster/pads/receive'], ['DELETE', '/roster/pads/[^/]+'],
+  ['POST', '/roster/issues'], ['GET', '/roster/issues'],
 ].map(([method, path]) => ({ method, re: new RegExp(`^${path}$`) }));
 
 export async function createDevice(db: Db, member: Member, userAgent: string | null): Promise<DeviceSession> {

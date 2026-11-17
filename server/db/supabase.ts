@@ -25,8 +25,8 @@ export function createSupabaseDb(url: string, serviceKey: string): Db {
   const votes: VoteOps = {
     issue: (i) => rpc('vote_issue', { p: i }),
     cancel: (c) => rpc('vote_cancel', { p: c }),
-    async assignWindow(stationId, windowId, boundaryAt) {
-      await rpc('vote_assign_window', { p_station: stationId, p_window: windowId, p_boundary: boundaryAt });
+    async assignWindow(deskId, windowId, boundaryAt) {
+      await rpc('vote_assign_window', { p_desk: deskId, p_window: windowId, p_boundary: boundaryAt });
     },
     windowCounts: (windowId) => rpc('vote_window_counts', { p_window: windowId }),
     liveCounts: () => rpc<StationCounts[]>('vote_live_counts'),

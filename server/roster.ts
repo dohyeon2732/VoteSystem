@@ -8,8 +8,12 @@ import {
 } from './core.js';
 import type {
   BallotEvent, BallotSource, Db, DeviceSession, District, Election, ElectionDay, Entry, Member, OperatorLog, Slot, Station,
-  TallyWindow, Voter, VoterAccessLog, VoterKind,
+  TallyWindow, Voter, VoterAccessLog, VoterKind, BallotPad, Desk, PadMove, PadReading, StationCounts, TagIssue, Dept,
 } from './db/types.js';
+import {
+  activePads, addDepts, allDesks, commitReadings, computeReadings, deskOf, deskView, padView, parseDepts, pickDesk, readingRanges,
+  resetDeskData, stationDesks, unassignedDesk, type ReadingItem,
+} from './desks.js';
 import { nowIso, slotEpoch } from './logic/time.js';
 import { createSessionToken, renewedExpiry } from './auth.js';
 import { decrypt, encrypt, hashSid, normalizeSid } from './voterCrypto.js';
@@ -17,7 +21,7 @@ import { decrypt, encrypt, hashSid, normalizeSid } from './voterCrypto.js';
 const MIN = 60 * 1000;
 const HOURS_GRACE_MS = 30 * MIN;      // 투표소 운영시간 30분 전 ~ 30분 후 (FR-93)
 const OWN_CANCEL_MS = 5 * MIN;        // 본인 취소 5분
-const SLOT_MATCH_MS = 10 * MIN;       // 시점 ±10분 안의 마감
+const SLOT_MATCH_MS = 15 * MIN;       // 시점 ±15분 안의 마감 (v1.4에서 10분 → 15분)
 const CLOSE_DELAY_MS = 70 * MIN;      // 마감 지연 경고
 const RECONCILE_DELAY_MS = 20 * MIN;  // 대조 중 지연 경고
 const LOOKUPS_PER_MIN = 30;
@@ -51,7 +55,7 @@ export async function assertNotElectionDay(db: Db, what: string) {
 }
 
 /** 지금 기기의 담당자 이름 (투표소 계정만). */
-const operatorOf = (ctx: Ctx) => (ctx.member?.role === 'station' ? ctx.device?.operator_name ?? null : null);
+export const operatorOf = (ctx: Ctx) => (ctx.member?.role === 'station' ? ctx.device?.operator_name ?? null : null);
 
 /** 변경 로그·자동 입력값에 남길 처리자: 투표소 기기는 "담당자 (투표소 계정)". */
 export function actorOf(ctx: Ctx): Member {
@@ -60,7 +64,8 @@ export function actorOf(ctx: Ctx): Member {
   return op ? { ...me, name: `${op} (${me.name})` } : me;
 }
 /** 마감·대조표에 보이는 처리자 이름: 투표소 기기는 담당자 이름. */
-const whoName = (ctx: Ctx) => operatorOf(ctx) ?? ctx.member!.name;
+export const whoName = (ctx: Ctx) => operatorOf(ctx) ?? ctx.member!.name;
+export const operatorName = operatorOf;
 
 export async function accessLog(ctx: Ctx, stationId: string | null, action: string, sidHash: string | null, result: string | null, note: string | null = null) {
   const me = ctx.member!;
@@ -102,6 +107,7 @@ async function places(db: Db) {
   return placeCache;
 }
 export function invalidatePlaces() { placeCache = null; }
+export const placesOf = places;
 
 /** 서약·파기·업로드·계정 종류 검사 (FR-93, FR-94). */
 async function checkGate(ctx: Ctx, el: Election, needReady?: boolean) {
@@ -113,6 +119,7 @@ async function checkGate(ctx: Ctx, el: Election, needReady?: boolean) {
   }
   if (me.role === 'station') {
     if (!ctx.device?.operator_name || !ctx.device.operator_pledged_at) throw new HttpError(403, 'operator_required', '담당자 이름을 입력하고 서약에 동의해야 합니다.');
+    if (!ctx.device.desk_id) throw new HttpError(403, 'operator_required', '창구를 고르고 담당자를 등록해야 합니다.');
   } else if (!me.pledged_at) {
     throw new HttpError(403, 'pledge_required', '개인정보 취급 서약에 먼저 동의해야 합니다.');
   }
@@ -145,7 +152,7 @@ export function stationHours(st: Station, el: Election, days: ElectionDay[], now
  * 검사 + 투표소 확인을 DB 왕복 한 번(병렬)으로 끝낸다. 학번 조회·불출처럼 자주 부르는 곳에서 쓴다.
  * 투표소 계정은 자기 투표소만, 운영시간에만 (skipHours = 상태 보기처럼 시간 제한이 없는 곳).
  */
-async function gateAt(ctx: Ctx, stationId: unknown, opts: { needReady?: boolean; skipHours?: boolean } = {}) {
+export async function gateAt(ctx: Ctx, stationId: unknown, opts: { needReady?: boolean; skipHours?: boolean } = {}) {
   const me = requireAuth(ctx);
   const [el, pl] = await Promise.all([election(ctx.db), places(ctx.db)]);
   await checkGate(ctx, el, opts.needReady);
@@ -188,24 +195,25 @@ function voterView(v: Voter) {
 }
 
 // ---------- 집계 연동 ----------
-async function stationCumulative(db: Db, stationId: string, upto?: string) {
-  const wins = (await db.all<TallyWindow>('tally_window', { station_id: stationId }))
-    .filter((w) => w.status !== 'reconciling' && (!upto || w.boundary_at <= upto));
-  return {
-    cumulative: wins.reduce((a, w) => a + (w.accepted_count ?? 0), 0),
-    leave: wins.reduce((a, w) => a + w.leave_count, 0),
-    last: wins.sort((a, b) => a.boundary_at.localeCompare(b.boundary_at)).at(-1) ?? null,
-  };
-}
-
-/** 일치한 마감 하나를 그 경계 ±10분 안의 집계 시점 입력값(entry)으로 옮긴다. */
+/**
+ * 일치한 마감 하나를 그 경계 ±15분 안의 집계 시점 입력값(entry)으로 옮긴다.
+ * v1.4: 시점 값 = 그 투표소 모든 창구의, 시점 + 15분까지 끝난 구간 인정 인원 합 (FR-109).
+ */
 async function syncEntriesForWindow(db: Db, actor: Member, win: TallyWindow) {
-  const [slots, days] = await Promise.all([db.all<Slot>('slot', { station_id: win.station_id }), db.all<ElectionDay>('election_day')]);
+  const [slots, days, all] = await Promise.all([
+    db.all<Slot>('slot', { station_id: win.station_id }), db.all<ElectionDay>('election_day'), db.all<TallyWindow>('tally_window', { station_id: win.station_id }),
+  ]);
   const boundary = Date.parse(win.boundary_at);
-  const { cumulative, leave } = await stationCumulative(db, win.station_id, win.boundary_at);
+  const done = all.filter((w) => w.status !== 'reconciling');
   for (const slot of slots) {
     const day = days.find((d) => d.id === slot.day_id);
-    if (!day || Math.abs(slotEpoch(day.date, slot.time) - boundary) > SLOT_MATCH_MS) continue;
+    if (!day) continue;
+    const at = slotEpoch(day.date, slot.time);
+    if (Math.abs(at - boundary) > SLOT_MATCH_MS) continue;
+    const upto = new Date(at + SLOT_MATCH_MS).toISOString();
+    const inRange = done.filter((w) => w.boundary_at <= upto);
+    const cumulative = inRange.reduce((a, w) => a + (w.accepted_count ?? 0), 0);
+    const leave = inRange.reduce((a, w) => a + w.leave_count, 0);
     const existing = await db.get<Entry>('entry', { station_id: win.station_id, slot_id: slot.id });
     const by = `꼬리표 대조(${win.matched_by_name ?? actor.name})`;
     const now = nowIso();
@@ -226,6 +234,30 @@ async function syncEntriesForWindow(db: Db, actor: Member, win: TallyWindow) {
       });
     }
   }
+}
+
+/**
+ * 시점 확정을 막는 창구 (FR-109): 그 시점 범위(±15분)에 일치 마감이 없는데 그 전에 한 체크가 남아 있는 창구.
+ * 마지막 마감 뒤로 체크가 없는 창구는 막지 않는다.
+ */
+export async function slotBlockers(db: Db, stations: Station[], date: string, time: string): Promise<string[]> {
+  const at = slotEpoch(date, time);
+  const from = new Date(at - SLOT_MATCH_MS).toISOString(), to = new Date(at + SLOT_MATCH_MS).toISOString();
+  const [desks, wins, open] = await Promise.all([allDesks(db), db.all<TallyWindow>('tally_window'), db.all<BallotEvent>('ballot_event', { window_id: null })]);
+  const canceled = new Set(open.filter((e) => e.kind === 'cancel').map((e) => e.ref_event_id));
+  const out: string[] = [];
+  for (const d of desks) {
+    const st = stations.find((s) => s.id === d.station_id);
+    if (!st) continue;
+    const mine = wins.filter((w) => w.desk_id === d.id);
+    const why =
+      mine.some((w) => w.status === 'reconciling' && w.boundary_at <= to) ? '대조 중'
+      : open.some((e) => e.desk_id === d.id && e.kind === 'issue' && !canceled.has(e.id) && e.at < from) ? '마감 안 함'
+      : mine.some((w) => w.boundary_at > to && w.opened_at < from && w.check_count > 0 && w.date === date) ? '늦게 마감'
+      : null;
+    if (why) out.push(`${st.name} ${d.name}(${why})`);
+  }
+  return out;
 }
 
 /** 입력값이 초기화된 뒤 대조 기록으로 다시 채운다. */
@@ -262,29 +294,55 @@ function stationWarning(st: Station, wins: TallyWindow[], electionDates: Set<str
   return todays.some((b) => b >= close - SLOT_MATCH_MS) ? null : '마감 미완료';
 }
 
-/** 현황판에 붙이는 실시간·대조 정보 (15.6) */
+/** 창구별 경고 (FR-109): 마감하지 않은 체크가 있을 때만 지연을 따진다. */
+function deskWarning(st: Station, wins: TallyWindow[], openNet: number, electionDates: Set<string>, now: number): string | null {
+  const reconciling = wins.find((w) => w.status === 'reconciling');
+  if (reconciling && now - Date.parse(reconciling.boundary_at) > RECONCILE_DELAY_MS) return '대조 지연';
+  const today = kstDate(now);
+  if (!electionDates.has(today) || openNet <= 0) return null;
+  const open = slotEpoch(today, st.open_time), close = slotEpoch(today, st.close_time);
+  if (now > close + SLOT_MATCH_MS) return '마감 미완료';
+  const last = Math.max(open, ...wins.filter((w) => w.date === today).map((w) => Date.parse(w.boundary_at)));
+  return now - last > CLOSE_DELAY_MS ? '마감 지연' : null;
+}
+
+const sumLive = (rows: StationCounts[]) => ({
+  net: rows.reduce((a, r) => a + Number(r.net ?? 0), 0), leave_net: rows.reduce((a, r) => a + Number(r.leave_net ?? 0), 0),
+  open_net: rows.reduce((a, r) => a + Number(r.open_net ?? 0), 0), open_leave_net: rows.reduce((a, r) => a + Number(r.open_leave_net ?? 0), 0),
+});
+
+/** 현황판에 붙이는 실시간·대조 정보 (15.6). v1.4: 투표소 값은 창구 합, 창구별 내역을 함께 준다. */
 export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station[], extensionEnabled: boolean) {
   const active = await rosterActive(db);
   if (!active) return { roster_active: false, stations: [] };
-  const [live, wins] = await Promise.all([db.votes.liveCounts(), db.all<TallyWindow>('tally_window')]);
+  const [live, wins, desks] = await Promise.all([db.votes.liveCounts(), db.all<TallyWindow>('tally_window'), allDesks(db)]);
   const dates = new Set(days.filter((d) => !d.is_extension || extensionEnabled).map((d) => d.date));
   const now = Date.now();
   return {
     roster_active: true,
     stations: stations.map((st) => {
-      const l = live.find((x) => x.station_id === st.id);
+      const l = sumLive(live.filter((x) => x.station_id === st.id));
       const mine = wins.filter((w) => w.station_id === st.id);
       const done = mine.filter((w) => w.status !== 'reconciling').sort((a, b) => a.boundary_at.localeCompare(b.boundary_at));
+      const deskRows = desks.filter((d) => d.station_id === st.id && !d.merged_into).map((d) => {
+        const dl = sumLive(live.filter((x) => x.desk_id === d.id));
+        const dw = mine.filter((w) => w.desk_id === d.id);
+        const dd = dw.filter((w) => w.status !== 'reconciling').sort((a, b) => a.boundary_at.localeCompare(b.boundary_at));
+        return {
+          desk_id: d.id, name: d.name, is_unassigned: d.is_unassigned, live: dl.net, open: dl.open_net,
+          reconciled: dd.reduce((a, w) => a + (w.accepted_count ?? 0), 0), last_boundary_at: dd.at(-1)?.boundary_at ?? null,
+          reconciling: dw.some((w) => w.status === 'reconciling'), warning: deskWarning(st, dw, dl.open_net, dates, now),
+        };
+      }).filter((d) => !d.is_unassigned || d.live !== 0 || d.reconciling);
       return {
         station_id: st.id,
-        live: Number(l?.net ?? 0),
-        live_leave: Number(l?.leave_net ?? 0),
-        open: Number(l?.open_net ?? 0),
+        live: l.net, live_leave: l.leave_net, open: l.open_net,
         reconciled: done.reduce((a, w) => a + (w.accepted_count ?? 0), 0),
         reconciled_leave: done.reduce((a, w) => a + w.leave_count, 0),
         last_boundary_at: done.at(-1)?.boundary_at ?? null,
         reconciling: mine.some((w) => w.status === 'reconciling'),
-        warning: stationWarning(st, mine, dates, now),
+        warning: deskRows.length ? deskRows.find((d) => d.warning)?.warning ?? null : stationWarning(st, mine, dates, now),
+        desks: deskRows,
       };
     }),
   };
@@ -294,7 +352,7 @@ export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station
 export function deviceView(d: DeviceSession | null) {
   return d ? {
     id: d.id, device_no: d.device_no, operator_name: d.operator_name, operator_since: d.operator_since,
-    operator_pledged: !!d.operator_pledged_at, created_at: d.created_at, expires_at: d.expires_at,
+    operator_pledged: !!d.operator_pledged_at, created_at: d.created_at, expires_at: d.expires_at, desk_id: d.desk_id ?? null,
   } : null;
 }
 
@@ -303,8 +361,9 @@ route('GET', '/roster/me', async (ctx) => {
   const me = requireAuth(ctx);
   const [el, pl, active] = await Promise.all([election(ctx.db), places(ctx.db), rosterActive(ctx.db)]);
   const station = me.role === 'station' ? pl.stations.find((s) => s.id === me.station_id) ?? null : null;
+  const desk = ctx.device?.desk_id ? await ctx.db.get<Desk>('desk', { id: ctx.device.desk_id }).catch(() => null) : null;
   return {
-    pledged_at: me.pledged_at ?? null, role: me.role, station, device: deviceView(ctx.device),
+    pledged_at: me.pledged_at ?? null, role: me.role, station, device: deviceView(ctx.device), desk: desk ? deskView(desk) : null,
     hours: station ? stationHours(station, el, pl.days) : null,
     roster_ready: !el.roster_upload && !el.purged_at && active,
     uploading: !!el.roster_upload, purged: !!el.purged_at, server_now: nowIso(),
@@ -320,13 +379,17 @@ route('POST', '/roster/operator', async (ctx) => {
   if (ctx.req.body?.agree !== true) throw new HttpError(400, 'bad_request', '개인정보 취급 서약에 동의해야 합니다.');
   const at = nowIso();
   const prev = dev.operator_name;
+  // 창구 고르기 (FR-107). 창구 변경은 담당자 변경 때만 (FR-107a)
+  const station = (await places(ctx.db)).stations.find((s) => s.id === dev.station_id);
+  if (!station) throw new HttpError(404, 'not_found', '이 계정의 투표소를 찾을 수 없습니다.');
+  const desk = await pickDesk(ctx, station, dev, ctx.req.body, name);
   await Promise.all([
-    ctx.db.update('device_session', { id: dev.id }, { operator_name: name, operator_since: at, operator_pledged_at: at, last_seen_at: at }),
+    ctx.db.update('device_session', { id: dev.id }, { operator_name: name, operator_since: at, operator_pledged_at: at, last_seen_at: at, desk_id: desk.id }),
     ctx.db.insert<OperatorLog>('operator_log', { id: randomUUID(), device_id: dev.id, station_id: dev.station_id, operator_name: name, started_at: at }),
   ]);
-  ctx.device = { ...dev, operator_name: name, operator_since: at, operator_pledged_at: at, last_seen_at: at };
-  await accessLog(ctx, dev.station_id, 'operator', null, 'pledged', `${dev.device_no}번 기기 · ${prev ? `${prev} → ` : ''}${name}`);
-  return { device: deviceView(ctx.device) };
+  ctx.device = { ...dev, operator_name: name, operator_since: at, operator_pledged_at: at, last_seen_at: at, desk_id: desk.id };
+  await accessLog(ctx, dev.station_id, 'operator', null, 'pledged', `${dev.device_no}번 기기 · ${desk.name} · ${prev ? `${prev} → ` : ''}${name}`);
+  return { device: deviceView(ctx.device), desk: deskView(desk) };
 });
 
 route('POST', '/roster/pledge', async (ctx) => {
@@ -370,6 +433,15 @@ route('POST', '/roster/lookup', async (ctx) => {
     out = { result, ...voterView(v), voted_at: v.voted_at, voted_station_name: pl.stations.find((s) => s.id === v.voted_station_id)?.name ?? '' };
   } else {
     result = 'ok'; out = { result, ...voterView(v) };
+    // 다른 학과 학생이면 경고만 (FR-107b). 불출은 막지 않는다
+    if (ctx.device?.desk_id) {
+      const desks = await stationDesks(ctx.db, station.id);
+      const mine = desks.find((d) => d.id === ctx.device!.desk_id);
+      const dept = String(out.dept ?? '').trim();
+      if (mine && !mine.is_all && !mine.is_unassigned && dept && !parseDepts(mine).includes(dept)) {
+        out.desk_warning = { dept, desk_name: desks.find((d) => parseDepts(d).includes(dept))?.name ?? null };
+      }
+    }
   }
   await accessLog(ctx, station.id, 'lookup', h, result);
   return out;
@@ -388,17 +460,18 @@ route('POST', '/roster/issue', async (ctx) => {
   ]);
   if (!v) throw new HttpError(404, 'not_found', '선거인을 찾을 수 없습니다.');
   if (v.district_id !== station.district_id) throw new HttpError(403, 'other_district', '이 투표소 선거구의 선거인이 아닙니다.');
+  const desk = await deskOf(ctx, station, ctx.req.body?.desk_id);
   let windowId: string | null = null;
   let source: BallotSource = 'live';
   if (missedId) {
-    if (!w || w.station_id !== station.id || w.status !== 'reconciling') throw new HttpError(409, 'window_closed', '대조 중인 구간이 아닙니다.');
+    if (!w || w.station_id !== station.id || w.status !== 'reconciling' || (w.desk_id ?? null) !== desk.id) throw new HttpError(409, 'window_closed', '이 창구의 대조 중인 구간이 아닙니다.');
     windowId = w.id; source = 'missed';
   }
   const eventId = randomUUID();
   const r = await ctx.db.votes.issue({
     event_id: eventId, voter_id: v.id, sid_hash: v.sid_hash, station_id: station.id, at: nowIso(),
     actor_id: me.id, actor_name: me.name, source, window_id: windowId, reason: source === 'missed' ? '대조 중 누락분 추가' : null,
-    operator_name: operatorOf(ctx), device_id: ctx.device?.id ?? null,
+    operator_name: operatorOf(ctx), device_id: ctx.device?.id ?? null, desk_id: desk.id,
   });
   if (!r.ok) {
     await accessLog(ctx, station.id, 'issue', v.sid_hash, 'already_voted');
@@ -408,7 +481,7 @@ route('POST', '/roster/issue', async (ctx) => {
     accessLog(ctx, station.id, 'issue', v.sid_hash, source === 'missed' ? 'missed' : 'ok'),
     ctx.db.votes.liveCounts(),
   ]);
-  const live = counts.find((x) => x.station_id === station.id);
+  const live = counts.find((x) => x.desk_id === desk.id);
   return { ok: true, event_id: eventId, is_leave: r.is_leave, open_count: Number(live?.open_net ?? 0) };
 });
 
@@ -454,24 +527,31 @@ route('POST', '/roster/cancel-by-sid', async (ctx) => {
   return doCancel(ctx, me, ev, reason);
 });
 
-// ---------- 투표소 상태·꼬리표 마감 (15.4) ----------
+// ---------- 창구 상태·꼬리표 마감 (15.4, 15.13) ----------
 route('GET', '/roster/station', async (ctx) => {
   const { me, el, station, pl } = await gateAt(ctx, ctx.req.query.station_id, { skipHours: true });
+  const desk = await deskOf(ctx, station, ctx.req.query.desk_id);
   // 최근 체크: 투표소 기기는 그 기기에서 한 것, 총관리자는 본인이 한 것
   const mine: Record<string, string> = ctx.device ? { device_id: ctx.device.id } : { actor_id: me.id };
-  const [live, wins, recent] = await Promise.all([
+  const [live, wins, recent, pads, issues, desks] = await Promise.all([
     ctx.db.votes.liveCounts(),
-    ctx.db.all<TallyWindow>('tally_window', { station_id: station.id }, 'boundary_at desc'),
+    ctx.db.all<TallyWindow>('tally_window', { desk_id: desk.id }, 'boundary_at desc'),
     ctx.db.all<BallotEvent>('ballot_event', { ...mine, station_id: station.id, kind: 'issue' }, 'at desc', 5),
+    activePads(ctx.db, desk.id),
+    ctx.db.all<TagIssue>('tag_issue', { desk_id: desk.id }, 'at desc', 20),
+    me.role === 'admin' ? stationDesks(ctx.db, station.id) : Promise.resolve([] as Desk[]),
   ]);
   const canceled = new Set((await ctx.db.allIn<BallotEvent>('ballot_event', 'ref_event_id', recent.map((e) => e.id))).map((c) => c.ref_event_id));
   const reconciling = wins.find((w) => w.status === 'reconciling') ?? null;
-  const l = live.find((x) => x.station_id === station.id);
+  const l = live.find((x) => x.desk_id === desk.id);
   return {
-    station, hours: stationHours(station, el, pl.days),
+    station, hours: stationHours(station, el, pl.days), desk: deskView(desk), desks: desks.map(deskView),
     open_count: Number(l?.open_net ?? 0), open_leave: Number(l?.open_leave_net ?? 0),
     reconciling: reconciling ? { ...reconciling, ...(await ctx.db.votes.windowCounts(reconciling.id)) } : null,
     last_window: wins.find((w) => w.status !== 'reconciling') ?? null,
+    pads: pads.map(padView),
+    issue_count: issues.filter((i) => !i.voided_at).length,
+    window_issues: reconciling ? issues.filter((i) => i.window_id === reconciling.id && !i.voided_at).map((i) => ({ id: i.id, type: i.type, count: i.count, serial_from: i.serial_from, serial_to: i.serial_to, note: i.note })) : [],
     recent: recent.map((e) => ({ id: e.id, at: e.at, is_leave: e.is_leave, canceled: canceled.has(e.id), source: e.source })),
     server_now: nowIso(),
   };
@@ -479,12 +559,14 @@ route('GET', '/roster/station', async (ctx) => {
 
 route('POST', '/roster/close', async (ctx) => {
   const { me, station } = await gateAt(ctx, ctx.req.body?.station_id, { needReady: true });
+  const desk = await deskOf(ctx, station, ctx.req.body?.desk_id);
   const op = operatorOf(ctx);
   // 마감 직전 담당자 재확인 (FR-89): 화면에서 확인한 이름이 지금 서버의 담당자와 다르면 다시 확인하게 한다
   if (op && ctx.req.body?.operator_name !== op) {
     throw new HttpError(409, 'operator_changed', `지금 이 기기의 담당자는 ${op}입니다. 담당자를 확인하고 다시 마감하세요.`);
   }
-  const wins = await ctx.db.all<TallyWindow>('tally_window', { station_id: station.id });
+  // v1.4: 구간은 창구 단위 (FR-108). 다른 창구의 대조는 이 창구를 막지 않는다
+  const wins = await ctx.db.all<TallyWindow>('tally_window', { desk_id: desk.id });
   if (wins.some((w) => w.status === 'reconciling')) throw new HttpError(409, 'reconciling', '대조 중인 구간이 있습니다. 먼저 꼬리표 대조를 마치세요.');
   const now = Date.now();
   const boundary = new Date(now).toISOString();
@@ -495,13 +577,13 @@ route('POST', '/roster/close', async (ctx) => {
     id: randomUUID(), station_id: station.id, date: today, opened_at: prev && prev > openAt ? prev : openAt, boundary_at: boundary,
     status: 'reconciling', check_count: 0, leave_count: 0, tag_count: null, accepted_count: null, adjustment: 0, adjust_reason: null,
     closed_by: me.id, closed_by_name: whoName(ctx), matched_at: null, matched_by_name: null,
-    ...(op ? { operator_name: op } : {}),
+    ...(op ? { operator_name: op } : {}), desk_id: desk.id,
   };
   await ctx.db.insert('tally_window', win);
-  await ctx.db.votes.assignWindow(station.id, win.id, boundary);
+  await ctx.db.votes.assignWindow(desk.id, win.id, boundary);
   const c = await ctx.db.votes.windowCounts(win.id);
   await ctx.db.update('tally_window', { id: win.id }, { check_count: c.net, leave_count: c.leave_net });
-  await accessLog(ctx, station.id, 'close', null, 'begin', `경계 ${hm(now)} · 체크 ${c.net}명`);
+  await accessLog(ctx, station.id, 'close', null, 'begin', `${desk.name} · 경계 ${hm(now)} · 체크 ${c.net}명`);
   return { window: { ...win, check_count: c.net, leave_count: c.leave_net, net: c.net, leave_net: c.leave_net } };
 });
 
@@ -509,27 +591,34 @@ async function loadReconciling(ctx: Ctx, me: Member, id: string) {
   const w = await ctx.db.get<TallyWindow>('tally_window', { id });
   if (!w) throw new HttpError(404, 'not_found', '마감 기록을 찾을 수 없습니다.');
   if (w.status !== 'reconciling') throw new HttpError(409, 'not_reconciling', '이미 대조가 끝난 구간입니다.');
-  if (me.role !== 'admin') await stationFor(ctx, w.station_id);
+  if (me.role !== 'admin') {
+    await stationFor(ctx, w.station_id);
+    if (ctx.device?.desk_id && w.desk_id && ctx.device.desk_id !== w.desk_id) throw new HttpError(403, 'other_desk', '다른 창구의 구간입니다.');
+  }
   return w;
 }
 
+/** 묶음별 마지막 번호로 꼬리표 수를 계산해 대조한다 (FR-101, FR-102). */
 route('POST', '/roster/close/:id/submit', async (ctx) => {
   const { me } = await rosterGate(ctx);
   const w = await loadReconciling(ctx, me, ctx.params.id);
-  const tags = int(ctx.req.body?.tag_count, '꼬리표 수');
-  const c = await ctx.db.votes.windowCounts(w.id);
-  await ctx.db.update('tally_window', { id: w.id }, { check_count: c.net, leave_count: c.leave_net, tag_count: tags });
+  const [c, pads] = await Promise.all([ctx.db.votes.windowCounts(w.id), w.desk_id ? activePads(ctx.db, w.desk_id) : Promise.resolve([] as BallotPad[])]);
+  if (c.net > 0 && pads.length === 0) throw new HttpError(409, 'no_pad', '등록된 묶음이 없습니다. "묶음 추가"로 쓰는 묶음을 먼저 등록하세요.');
+  const { tag_count: tags, items } = computeReadings(pads, ctx.req.body?.readings);
+  const ranges = readingRanges(items);
+  await ctx.db.update('tally_window', { id: w.id }, { check_count: c.net, leave_count: c.leave_net, tag_count: tags, pad_json: JSON.stringify(items) });
   if (tags !== c.net) {
     await accessLog(ctx, w.station_id, 'close', null, 'mismatch', `꼬리표 ${tags} / 체크 ${c.net}`);
     const diff = tags - c.net;
-    throw new HttpError(409, 'mismatch', `꼬리표 수와 체크 인원이 다릅니다. 꼬리표가 ${Math.abs(diff)}장 ${diff > 0 ? '많습니다' : '적습니다'}.`, { check_count: c.net, tag_count: tags, diff });
+    throw new HttpError(409, 'mismatch', `꼬리표 수와 체크 인원이 다릅니다. 꼬리표가 ${Math.abs(diff)}장 ${diff > 0 ? '많습니다' : '적습니다'}.`, { check_count: c.net, tag_count: tags, diff, ranges });
   }
   const done: TallyWindow = { ...w, status: 'matched', check_count: c.net, leave_count: c.leave_net, tag_count: tags, accepted_count: c.net, matched_at: nowIso(), matched_by_name: whoName(ctx) };
+  await commitReadings(ctx, done, items);
   await ctx.db.update('tally_window', { id: w.id }, { status: done.status, accepted_count: done.accepted_count, matched_at: done.matched_at, matched_by_name: done.matched_by_name });
   await accessLog(ctx, w.station_id, 'close', null, 'matched', `${c.net}명`);
   await log(ctx.db, actorOf(ctx), 'tally.match', { station_id: w.station_id, note: `마감 ${hm(Date.parse(w.boundary_at))} · 체크 ${c.net} = 꼬리표 ${tags}` });
   await syncEntriesForWindow(ctx.db, actorOf(ctx), done);
-  return { window: done };
+  return { window: done, ranges };
 });
 
 route('POST', '/roster/close/:id/adjust', async (ctx) => {
@@ -539,11 +628,17 @@ route('POST', '/roster/close/:id/adjust', async (ctx) => {
   const reason = str(ctx.req.body?.reason, '조정 사유', 300);
   const accepted = int(ctx.req.body?.accepted_count, '인정 인원');
   const c = await ctx.db.votes.windowCounts(w.id);
-  const tags = ctx.req.body?.tag_count !== undefined && ctx.req.body?.tag_count !== null && ctx.req.body?.tag_count !== '' ? int(ctx.req.body.tag_count, '꼬리표 수') : w.tag_count;
+  // 묶음 번호: 새로 넣었으면 그 값, 아니면 근무자가 마지막으로 넣은 값. 둘 다 없으면 묶음은 그대로 둔다
+  const pads = w.desk_id ? await activePads(ctx.db, w.desk_id) : [];
+  let items: ReadingItem[] = [];
+  if (Array.isArray(ctx.req.body?.readings) && ctx.req.body.readings.length) items = computeReadings(pads, ctx.req.body.readings).items;
+  else if (w.pad_json) { try { items = (JSON.parse(w.pad_json) as ReadingItem[]).filter((i) => pads.some((p) => p.id === i.pad_id && p.used_total === i.prev_total)); } catch { items = []; } }
+  const tags = items.length ? items.reduce((a, i) => a + (i.used_total - i.prev_total), 0) : w.tag_count;
   const done: TallyWindow = {
     ...w, status: 'adjusted', check_count: c.net, leave_count: c.leave_net, tag_count: tags, accepted_count: accepted,
-    adjustment: accepted - c.net, adjust_reason: reason, matched_at: nowIso(), matched_by_name: me.name,
+    adjustment: accepted - c.net, adjust_reason: reason, matched_at: nowIso(), matched_by_name: me.name, pad_json: items.length ? JSON.stringify(items) : w.pad_json ?? null,
   };
+  await commitReadings(ctx, done, items);
   const { id: _id, ...patch } = done;
   await ctx.db.update('tally_window', { id: w.id }, patch);
   await accessLog(ctx, w.station_id, 'adjust', null, 'adjusted', `체크 ${c.net} · 꼬리표 ${tags ?? '-'} · 인정 ${accepted} · ${reason}`);
@@ -555,14 +650,25 @@ route('POST', '/roster/close/:id/adjust', async (ctx) => {
 route('GET', '/roster/windows', async (ctx) => {
   const me = requireAuth(ctx);
   const cfg = await loadConfig(ctx.db);
-  let wins = await ctx.db.all<TallyWindow>('tally_window', undefined, 'boundary_at');
-  const extras = await tallyExtras(ctx.db, cfg.days, cfg.stations, cfg.election.extension_enabled);
-  // 투표소 계정은 자기 투표소만 (FR-94c). 총관리자·선관위원은 전체 열람
-  if (me.role === 'station') {
-    wins = wins.filter((w) => w.station_id === me.station_id);
-    return { windows: wins, stations: extras.stations.filter((s) => s.station_id === me.station_id), server_now: nowIso() };
-  }
-  return { windows: wins, stations: extras.stations, server_now: nowIso() };
+  const [all, extras, desks, pads, issues] = await Promise.all([
+    ctx.db.all<TallyWindow>('tally_window', undefined, 'boundary_at'),
+    tallyExtras(ctx.db, cfg.days, cfg.stations, cfg.election.extension_enabled),
+    allDesks(ctx.db), ctx.db.all<BallotPad>('ballot_pad').catch(() => [] as BallotPad[]), ctx.db.all<TagIssue>('tag_issue').catch(() => [] as TagIssue[]),
+  ]);
+  // 투표소 계정은 자기 투표소의 모든 창구 (FR-94c, 15.13). 총관리자·선관위원은 전체 열람
+  const mine = (id: string) => me.role !== 'station' || id === me.station_id;
+  const wins = all.filter((w) => mine(w.station_id)).map((w) => {
+    let ranges: ReturnType<typeof readingRanges> = [];
+    try { ranges = w.pad_json ? readingRanges(JSON.parse(w.pad_json) as ReadingItem[]) : []; } catch { ranges = []; }
+    const { pad_json: _p, ...rest } = w;
+    return { ...rest, desk_name: desks.find((d) => d.id === w.desk_id)?.name ?? null, ranges, issue_count: issues.filter((i) => i.window_id === w.id && !i.voided_at).length };
+  });
+  return {
+    windows: wins, stations: extras.stations.filter((s) => mine(s.station_id)),
+    desks: desks.filter((d) => mine(d.station_id) && !d.merged_into).map(deskView),
+    pads: pads.filter((p) => mine(p.station_id)).map(padView),
+    my_desk_id: ctx.device?.desk_id ?? null, server_now: nowIso(),
+  };
 });
 
 // ---------- 명부 관리 (15.2) ----------
@@ -625,6 +731,7 @@ route('POST', '/roster/upload/chunk', async (ctx) => {
       voted_at: null, voted_station_id: null, voted_event_id: null, batch_id: up.id, source: 'upload', created_at: now,
     };
   });
+  await addDepts(ctx.db, rows.map((r: any) => ({ district_id: String(r?.district_id ?? ''), name: String(r?.dept ?? '').trim() }))).catch(() => undefined);
   try {
     await ctx.db.insertMany('voter', voters);
   } catch {
@@ -679,6 +786,7 @@ route('POST', '/roster/voters', async (ctx) => {
     id: randomUUID(), sid_hash: h, name_enc: encrypt(name), dept_enc: encrypt(dept), district_id: b.district_id, kind,
     voted_at: null, voted_station_id: null, voted_event_id: null, batch_id: null, source: 'manual', created_at: nowIso(),
   });
+  await addDepts(ctx.db, [{ district_id: b.district_id, name: dept }]).catch(() => undefined);
   await recomputeBaseVoters(ctx.db, me);
   await accessLog(ctx, null, 'voter.add', h, kind, reason);
   await log(ctx.db, me, 'roster.add', { note: `${kind === 'regular' ? '정회원' : '준회원'} 1명 추가 · ${reason}` });
@@ -717,6 +825,7 @@ route('POST', '/roster/reset-checks', async (ctx) => {
   await assertNotElectionDay(ctx.db, '체크 기록 초기화');
   const entries = await ctx.db.all<Entry>('entry', { entered_by: 'system' });
   await ctx.db.votes.resetChecks();
+  await resetDeskData(ctx.db);
   const crs = await ctx.db.all<{ id: string; entry_id: string }>('change_request');
   const ids = new Set(entries.map((e) => e.id));
   await ctx.db.removeIds('change_request', crs.filter((c) => ids.has(c.entry_id)).map((c) => c.id));
@@ -737,7 +846,12 @@ route('GET', '/roster/backup/data', async (ctx) => {
     ctx.db.count('ballot_event'),
     offset === 0 ? ctx.db.all<TallyWindow>('tally_window', undefined, 'boundary_at') : Promise.resolve([] as TallyWindow[]),
   ]);
-  return { status: 200, body: { events, windows: wins, total, page: BACKUP_PAGE }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
+  // v1.4: 창구·묶음·마감별 번호·이동·이슈도 첫 쪽에 함께 (FR-106)
+  const extra = offset === 0 ? {
+    desks: await ctx.db.all<Desk>('desk'), pads: await ctx.db.all<BallotPad>('ballot_pad'), readings: await ctx.db.all<PadReading>('pad_reading'),
+    moves: await ctx.db.all<PadMove>('pad_move'), issues: await ctx.db.all<TagIssue>('tag_issue'),
+  } : { desks: [], pads: [], readings: [], moves: [], issues: [] };
+  return { status: 200, body: { events, windows: wins, ...extra, total, page: BACKUP_PAGE }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
 });
 
 /** 백업 파일 저장을 마쳤다고 기록. 자동 백업이면 로그인도 연장한다 (자정까지만). */
@@ -761,6 +875,18 @@ route('POST', '/roster/restore/chunk', async (ctx) => {
   if (b.first === true && ((await ctx.db.count('ballot_event')) > 0 || (await ctx.db.count('tally_window')) > 0)) {
     throw new HttpError(409, 'not_empty', '체크 기록이 비어 있을 때만 복원할 수 있습니다. 체크 기록 초기화 후 다시 시도하세요.');
   }
+  if (b.first === true) {
+    // v1.4 부가 자료: 백업에 있는 그대로 다시 넣는다 (서버가 만든 행이므로 열 구성이 같다)
+    await resetDeskData(ctx.db);
+    const rowsOf = (v: unknown) => (Array.isArray(v) ? (v as Record<string, unknown>[]).filter((r) => r && typeof r.id === 'string') : []);
+    const extraRows = rowsOf(b.desks).length + rowsOf(b.pads).length + rowsOf(b.readings).length + rowsOf(b.moves).length + rowsOf(b.issues).length;
+    if (extraRows > 20000) throw new HttpError(400, 'bad_request', '부가 자료가 너무 많습니다.');
+    await ctx.db.insertMany('desk', rowsOf(b.desks));
+    await ctx.db.insertMany('ballot_pad', rowsOf(b.pads));
+    await ctx.db.insertMany('pad_reading', rowsOf(b.readings));
+    await ctx.db.insertMany('pad_move', rowsOf(b.moves));
+    await ctx.db.insertMany('tag_issue', rowsOf(b.issues));
+  }
   const wins = Array.isArray(b.windows) ? (b.windows as TallyWindow[]) : [];
   const events = Array.isArray(b.events) ? (b.events as BallotEvent[]) : [];
   if (wins.length + events.length > 1000) throw new HttpError(400, 'bad_request', '한 번에 1,000건까지 보낼 수 있습니다.');
@@ -770,12 +896,14 @@ route('POST', '/roster/restore/chunk', async (ctx) => {
     adjustment: Number(w.adjustment ?? 0), adjust_reason: w.adjust_reason ?? null, closed_by: String(w.closed_by), closed_by_name: String(w.closed_by_name),
     matched_at: w.matched_at ?? null, matched_by_name: w.matched_by_name ?? null,
     ...(w.operator_name ? { operator_name: String(w.operator_name) } : {}),
+    ...(w.desk_id ? { desk_id: String(w.desk_id) } : {}), ...(w.pad_json ? { pad_json: String(w.pad_json) } : {}),
   });
   const pickE = (e: BallotEvent): BallotEvent => ({
     id: String(e.id), voter_id: String(e.voter_id), voter_sid_hash: String(e.voter_sid_hash), station_id: String(e.station_id), kind: e.kind === 'cancel' ? 'cancel' : 'issue',
     ref_event_id: e.ref_event_id ?? null, is_leave: e.is_leave === true || (e.is_leave as unknown) === 1, at: String(e.at), actor_id: String(e.actor_id), actor_name: String(e.actor_name),
     window_id: e.window_id ?? null, source: e.source ?? 'restore', reason: e.reason ?? null,
     ...(e.operator_name ? { operator_name: String(e.operator_name) } : {}), ...(e.device_id ? { device_id: String(e.device_id) } : {}),
+    ...(e.desk_id ? { desk_id: String(e.desk_id) } : {}),
   });
   await ctx.db.insertMany('tally_window', wins.map(pickW));
   await ctx.db.insertMany('ballot_event', events.map(pickE));
@@ -802,7 +930,7 @@ async function classifySheet(db: Db, rows: any[]) {
     const date = String(r?.date ?? '').trim();
     const time = String(r?.time ?? '').trim().padStart(5, '0');
     const at = DATE_RE.test(date) && TIME_RE.test(time) ? new Date(slotEpoch(date, time)).toISOString() : null;
-    return { index, sid, station: st ?? null, at, recorder: String(r?.recorder ?? '').trim().slice(0, 50), hash: sid.length >= 4 ? hashSid(sid) : '' };
+    return { index, sid, station: st ?? null, at, desk: String(r?.desk ?? '').trim(), recorder: String(r?.recorder ?? '').trim().slice(0, 50), hash: sid.length >= 4 ? hashSid(sid) : '' };
   });
   const voters = await db.allIn<Voter>('voter', 'sid_hash', [...new Set(prepared.map((p) => p.hash).filter(Boolean))], { batch_id: null });
   const seen = new Set<string>();
@@ -815,7 +943,7 @@ async function classifySheet(db: Db, rows: any[]) {
     if (!v) return { ...base, status: 'not_found' as const };
     if (v.district_id !== p.station.district_id) return { ...base, status: 'other_district' as const };
     if (v.voted_at) return { ...base, status: 'voted' as const };
-    return { ...base, status: 'ok' as const, _voter: v, _station: p.station, _recorder: p.recorder };
+    return { ...base, status: 'ok' as const, _voter: v, _station: p.station, _recorder: p.recorder, _desk: p.desk };
   });
 }
 
@@ -824,26 +952,31 @@ route('POST', '/roster/sheet/preview', async (ctx) => {
   await rosterGate(ctx, { needReady: true });
   const res = await classifySheet(ctx.db, ctx.req.body?.rows);
   await accessLog(ctx, null, 'sheet.preview', null, 'ok', `${res.length}행`);
-  return { rows: res.map(({ _voter, _station, _recorder, ...r }: any) => r) };
+  return { rows: res.map(({ _voter, _station, _recorder, _desk, ...r }: any) => r) };
 });
 
 route('POST', '/roster/sheet/apply', async (ctx) => {
   const me = requireAdmin(ctx);
   await rosterGate(ctx, { needReady: true });
   const res = await classifySheet(ctx.db, ctx.req.body?.rows);
-  let applied = 0, failed = 0;
+  let applied = 0, failed = 0, unassigned = 0;
+  // 창구 열이 비었거나 이름이 맞지 않으면 "창구 미지정"으로 (FR-110)
+  const deskCache = new Map<string, Desk[]>();
   for (const r of res as any[]) {
     if (r.status !== 'ok') continue;
+    if (!deskCache.has(r._station.id)) deskCache.set(r._station.id, await stationDesks(ctx.db, r._station.id));
+    let desk = deskCache.get(r._station.id)!.find((d) => !d.is_unassigned && d.name === r._desk);
+    if (!desk) { desk = await unassignedDesk(ctx.db, r._station.id, me.name); unassigned++; }
     const out = await ctx.db.votes.issue({
       event_id: randomUUID(), voter_id: r._voter.id, sid_hash: r._voter.sid_hash, station_id: r._station.id, at: r.at,
       actor_id: me.id, actor_name: `${r._recorder || me.name}(장애 시트)`, source: 'sheet', window_id: null, reason: '장애 기록 시트 반영',
-      operator_name: null, device_id: null,
+      operator_name: null, device_id: null, desk_id: desk.id,
     });
     if (out.ok) applied++; else failed++;
   }
   await log(ctx.db, me, 'roster.sheet', { note: `장애 시트 반영 ${applied}명${failed ? ` · 이미 투표 ${failed}명` : ''}` });
   await accessLog(ctx, null, 'sheet.apply', null, 'ok', `${applied}명`);
-  return { applied, failed };
+  return { applied, failed, unassigned };
 });
 
 // ---------- 보유기간·파기 (FR-99) ----------
