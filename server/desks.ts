@@ -211,9 +211,16 @@ route('PUT', '/desks/:id', async (ctx) => {
   if (typeof ctx.req.body?.name === 'string') patch.name = str(ctx.req.body.name, '창구 이름', 60);
   if (Array.isArray(ctx.req.body?.depts) && !d.is_all && !d.is_unassigned) {
     const depts = cleanDepts(ctx.req.body.depts);
+    if (!depts.length) throw new HttpError(400, 'bad_request', '학과를 하나 이상 고르세요. 창구를 없애려면 다른 창구로 합치세요.');
+    const pl = await placesOf(ctx.db);
+    const known = new Set((await ctx.db.all<Dept>('dept', { district_id: pl.stations.find((s) => s.id === d.station_id)?.district_id ?? '' })).map((x) => x.name));
+    const unknown = depts.filter((x) => !known.has(x) && !parseDepts(d).includes(x));
+    if (unknown.length) throw new HttpError(400, 'bad_dept', `이 선거구 명부에 없는 학과입니다: ${unknown.map(deptLabel).join(', ')}`);
+    // 이름을 따로 바꾼 적이 없으면(학과에서 자동으로 붙은 이름이면) 새 학과 구성에 맞춰 다시 붙인다
+    if (patch.name === undefined && d.name === deskNameFor(parseDepts(d), known)) patch.name = deskNameFor(depts, known);
     for (const o of (await stationDesks(ctx.db, d.station_id)).filter((x) => x.id !== d.id)) {
       const taken = parseDepts(o).filter((x) => depts.includes(x));
-      if (taken.length) throw new HttpError(409, 'dept_taken', `${taken.join(', ')}은(는) 이미 "${o.name}" 창구가 맡고 있습니다.`);
+      if (taken.length) throw new HttpError(409, 'dept_taken', `${taken.map(deptLabel).join(', ')}은(는) 이미 "${o.name}" 창구가 맡고 있습니다.`);
     }
     patch.depts = JSON.stringify(depts);
   }

@@ -721,6 +721,21 @@ export default function RosterCheck() {
         </div>
       )}
 
+      {/* 문제 발생 시 연락 안내 */}
+      <div className="alert info" role="note">
+        <p style={{ margin: 0 }}>
+          만약 시스템 및 총학생회 투표 관련 문제 발생 시 즉시 각 선거구
+          중앙선거관리위원이나 중선관위에 보고하여 주시기 바랍니다.
+        </p>
+        <p style={{ margin: "8px 0 0" }}>
+          중선관위원이 없는 경우 중앙선거관리부위원장{" "}
+          <a href="tel:01066112732" style={{ fontWeight: 700, whiteSpace: "nowrap" }}>
+            010-6611-2732
+          </a>
+          로 전화하시기 바랍니다.
+        </p>
+      </div>
+
       <Sheet
         open={operatorOpen}
         onClose={() => setOperatorOpen(false)}

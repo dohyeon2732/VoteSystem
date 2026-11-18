@@ -22,6 +22,9 @@ export default function AdminIssues() {
   const [deskStation, setDeskStation] = useState('');
   const [deskList, setDeskList] = useState<DeskList | null>(null);
   const [newDepts, setNewDepts] = useState<string[]>([]);
+  const [deskMsg, setDeskMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  /** 학과 구성을 고치는 중인 창구 (FR-107) */
+  const [deskEdit, setDeskEdit] = useState<{ id: string; depts: string[] } | null>(null);
 
   if (!config) return <main><p className="muted center">불러오는 중…</p></main>;
   const sname = (id: string) => config.stations.find((s) => s.id === id)?.name ?? '?';
@@ -54,10 +57,16 @@ export default function AdminIssues() {
   }, '묶음을 정정했습니다.');
 
   const loadDesks = async (stationId: string) => {
-    setDeskStation(stationId); setDeskList(null); setNewDepts([]);
-    if (stationId) try { setDeskList(await api<DeskList>(`/roster/desks?station_id=${encodeURIComponent(stationId)}`)); } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    setDeskStation(stationId); setDeskList(null); setNewDepts([]); setDeskEdit(null);
+    if (stationId) try { setDeskList(await api<DeskList>(`/roster/desks?station_id=${encodeURIComponent(stationId)}`)); } catch (e) { setDeskMsg({ ok: false, text: (e as Error).message }); }
   };
-  const deskAction = (fn: () => Promise<unknown>, done: string) => run(async () => { await fn(); await loadDesks(deskStation); }, done);
+  // 결과는 창구 관리 칸 안에 보여 준다 (페이지 맨 위 알림은 스크롤하면 안 보인다)
+  const deskAction = async (fn: () => Promise<unknown>, done: string) => {
+    setDeskMsg(null);
+    try { await fn(); await Promise.all([loadDesks(deskStation), pads.reload()]); setDeskMsg({ ok: true, text: done }); }
+    catch (e) { setDeskMsg({ ok: false, text: (e as Error).message }); }
+  };
+  const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
   return (
     <main className="stack">
@@ -137,14 +146,18 @@ export default function AdminIssues() {
         <p className="muted small">창구는 근무자가 담당자를 등록할 때 직접 만들 수 있습니다. 목록이 정해졌으면 여기서 미리 만들어 두세요. 한 학과는 한 투표소에서 창구 한 곳에만 속합니다.</p>
         <div className="field"><label htmlFor="dk-st">투표소</label>
           <select id="dk-st" className="input" value={deskStation} onChange={(e) => loadDesks(e.target.value)}><option value="">투표소 선택</option>{config.stations.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+        {deskMsg && <div className={`alert ${deskMsg.ok ? 'good' : 'danger'}`} role="alert">{deskMsg.text}</div>}
+        {deskStation && !deskList && !deskMsg && <p className="muted small">창구 목록을 불러오는 중…</p>}
         {deskList && (
           <>
             <div className="list">
               {deskList.desks.map((d) => (
-                <div key={d.id} className="list-item">
+                <div key={d.id}>
+                <div className="list-item">
                   <div><div className="title">{d.name}</div><div className="sub">{d.is_unassigned ? '장애 시트·총관리자 체크용' : d.is_all ? '학과 구분 없음' : d.depts.map(deptLabel).join(', ')} · 기기 {d.device_count}대</div></div>
                   <div className="right row" style={{ gap: 6 }}>
                     {!d.is_unassigned && <button className="btn sm ghost" onClick={() => { const name = window.prompt('창구 이름', d.name); if (name?.trim() && name.trim() !== d.name) deskAction(() => api(`/desks/${d.id}`, { method: 'PUT', body: { name } }), '창구 이름을 바꿨습니다.'); }}>이름</button>}
+                    {!d.is_unassigned && !d.is_all && <button className="btn sm ghost" onClick={() => setDeskEdit(deskEdit?.id === d.id ? null : { id: d.id, depts: d.depts })}>학과</button>}
                     {deskList.desks.length > 1 && (
                       <select className="input" style={{ width: 150 }} value="" onChange={(e) => { const to = deskList.desks.find((x) => x.id === e.target.value); if (to && window.confirm(`"${d.name}" 창구를 "${to.name}" 창구로 합칠까요? 묶음과 기기가 옮겨지고 되돌릴 수 없습니다.`)) deskAction(() => api(`/desks/${d.id}/merge`, { body: { into_id: to.id } }), '창구를 합쳤습니다.'); }}>
                         <option value="">다른 창구로 합치기</option>
@@ -153,6 +166,21 @@ export default function AdminIssues() {
                     )}
                   </div>
                 </div>
+                {deskEdit?.id === d.id && (
+                  <div className="stack" style={{ gap: 6, padding: '4px 0 12px' }}>
+                    <span className="muted small">이 창구가 맡을 학과를 고르세요. 다른 창구가 맡은 학과는 나오지 않습니다.</span>
+                    <div className="chips">
+                      {[...new Set([...d.depts, ...deskList.depts.filter((x) => !x.desk_id).map((x) => x.name)])].map((name) => (
+                        <button key={name} type="button" aria-pressed={deskEdit.depts.includes(name)} className={`chip ${deskEdit.depts.includes(name) ? 'active' : ''}`} onClick={() => setDeskEdit({ id: d.id, depts: toggle(deskEdit.depts, name) })}>{deptLabel(name) || '(학과 미기재)'}</button>
+                      ))}
+                    </div>
+                    <div className="row" style={{ gap: 6 }}>
+                      <button className="btn sm primary" disabled={!deskEdit.depts.length} onClick={() => deskAction(() => api(`/desks/${d.id}`, { method: 'PUT', body: { depts: deskEdit.depts } }), '창구의 학과를 바꿨습니다.')}>저장</button>
+                      <button className="btn sm ghost" onClick={() => setDeskEdit(null)}>닫기</button>
+                    </div>
+                  </div>
+                )}
+                </div>
               ))}
               {deskList.desks.length === 0 && <p className="muted small">아직 창구가 없습니다.</p>}
             </div>
@@ -160,7 +188,7 @@ export default function AdminIssues() {
               <strong>새 창구</strong>
               <div className="chips">
                 {deskList.depts.filter((d) => !d.desk_id).map((d) => (
-                  <button key={d.name} className={`chip ${newDepts.includes(d.name) ? 'active' : ''}`} onClick={() => setNewDepts(newDepts.includes(d.name) ? newDepts.filter((x) => x !== d.name) : [...newDepts, d.name])}>{deptLabel(d.name) || '(학과 미기재)'}</button>
+                  <button key={d.name} className={`chip ${newDepts.includes(d.name) ? 'active' : ''}`} onClick={() => setNewDepts(toggle(newDepts, d.name))}>{deptLabel(d.name) || '(학과 미기재)'}</button>
                 ))}
                 {deskList.depts.every((d) => d.desk_id) && <span className="muted small">모든 학과에 창구가 있습니다.</span>}
               </div>
