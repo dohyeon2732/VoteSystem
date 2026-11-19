@@ -22,7 +22,7 @@ export default function Layout() {
     <>
       <header className="topbar">
         <div className="topbar-inner">
-          <div className="brand"><img src="/logo.svg" alt="" className="brand-logo" />{config?.election.name ?? '투표율 집계'}</div>
+          <div className="brand"><img src="/logo.svg" alt="" className="brand-logo" />{config?.election.name ?? '선거인명부 확인 시스템'}</div>
           <nav className="nav">
             {isStation ? (
               <>
