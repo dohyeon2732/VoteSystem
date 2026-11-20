@@ -683,7 +683,7 @@ route('POST', '/roster/upload/begin', async (ctx) => {
   const me = requireAdmin(ctx);
   const { el } = await rosterGate(ctx);
   const kind: VoterKind = ctx.req.body?.kind === 'associate' ? 'associate' : ctx.req.body?.kind === 'regular' ? 'regular' : (() => { throw new HttpError(400, 'bad_request', '명부 종류를 고르세요.'); })();
-  if ((await ctx.db.count('ballot_event')) > 0) throw new HttpError(409, 'has_checks', '체크 기록이 있어 명부를 교체할 수 없습니다. 리허설 후라면 체크 기록 초기화를 먼저 하세요.');
+  if ((await ctx.db.count('ballot_event')) > 0) throw new HttpError(409, 'has_checks', '체크 기록이 있어 명부를 교체할 수 없습니다. 리허설 후라면 설정 화면의 전체 초기화를 먼저 하세요.');
   if (el.roster_upload) {
     const prev = JSON.parse(el.roster_upload) as { id: string };
     await ctx.db.remove('voter', { batch_id: prev.id });
@@ -812,20 +812,23 @@ route('PUT', '/roster/voters', async (ctx) => {
   return { ok: true };
 });
 
-/** 체크 기록 초기화 (FR-97) */
-route('POST', '/roster/reset-checks', async (ctx) => {
+/**
+ * 전체 초기화 (FR-116): 선거인명부·설정·계정만 남기고 투표 전 상태로 되돌린다.
+ * 체크·투표 여부, 마감·대조, 창구·이슈, 입력값·수정요청, 변경 로그·접근 로그, 기기 접속·담당자 이력을 모두 지운다.
+ */
+route('POST', '/reset-all', async (ctx) => {
   const me = requireAdmin(ctx);
-  if (String(ctx.req.body?.confirm ?? '').normalize('NFC').trim() !== '체크기록초기화') throw new HttpError(400, 'bad_request', '확인 문구가 맞지 않습니다.');
-  await assertNotElectionDay(ctx.db, '체크 기록 초기화');
-  const entries = await ctx.db.all<Entry>('entry', { entered_by: 'system' });
+  if (String(ctx.req.body?.confirm ?? '').normalize('NFC').trim() !== '전체초기화') throw new HttpError(400, 'bad_request', '확인 문구가 맞지 않습니다.');
+  await assertNotElectionDay(ctx.db, '전체 초기화');
   await ctx.db.votes.resetChecks();
   await resetDeskData(ctx.db);
-  const crs = await ctx.db.all<{ id: string; entry_id: string }>('change_request');
-  const ids = new Set(entries.map((e) => e.id));
-  await ctx.db.removeIds('change_request', crs.filter((c) => ids.has(c.entry_id)).map((c) => c.id));
-  await ctx.db.removeIds('entry', [...ids]);
-  await log(ctx.db, me, 'roster.reset_checks', { note: `체크 기록 초기화 · 자동 입력값 ${ids.size}건 삭제` });
-  await accessLog(ctx, null, 'reset_checks', null, 'ok');
+  for (const t of ['change_request', 'entry', 'audit_log', 'voter_access_log', 'operator_log', 'device_session']) await ctx.db.removeAll(t);
+  for (const m of await ctx.db.all<Member>('member')) {
+    if (m.failed_count || m.locked_until || m.pledged_at) await ctx.db.update('member', { id: m.id }, { failed_count: 0, locked_until: null, pledged_at: null });
+  }
+  await ctx.db.update('election', { id: 'main' }, { last_backup_at: null });
+  await log(ctx.db, me, 'system.reset', { note: '전체 초기화 (선거인명부·설정·계정만 유지)' });
+  await accessLog(ctx, null, 'reset_all', null, 'ok');
   return { ok: true };
 });
 
@@ -867,7 +870,7 @@ route('POST', '/roster/restore/chunk', async (ctx) => {
   requireAdmin(ctx);
   const b = ctx.req.body ?? {};
   if (b.first === true && ((await ctx.db.count('ballot_event')) > 0 || (await ctx.db.count('tally_window')) > 0)) {
-    throw new HttpError(409, 'not_empty', '체크 기록이 비어 있을 때만 복원할 수 있습니다. 체크 기록 초기화 후 다시 시도하세요.');
+    throw new HttpError(409, 'not_empty', '체크 기록이 비어 있을 때만 복원할 수 있습니다. 설정 화면의 전체 초기화 후 다시 시도하세요.');
   }
   if (b.first === true) {
     // v1.4 부가 자료: 백업에 있는 그대로 다시 넣는다 (서버가 만든 행이므로 열 구성이 같다)

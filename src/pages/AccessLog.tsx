@@ -6,7 +6,7 @@ import { usePolling } from '../hooks/usePolling';
 const ACTIONS: Record<string, string> = {
   lookup: '조회', issue: '불출', cancel: '취소', close: '마감', adjust: '조정', denied: '거부', pledge: '서약', upload: '명부 업로드',
   'voter.add': '개별 추가', 'voter.edit': '개별 정정', backup: '백업', restore: '복원', 'sheet.preview': '시트 확인', 'sheet.apply': '시트 반영',
-  reset_checks: '체크 초기화', purge: '파기', operator: '담당자 변경', 'device.revoke': '기기 강제 로그아웃', 'device.revoke_all': '투표소 계정 종료',
+  reset_checks: '체크 초기화', reset_all: '전체 초기화', purge: '파기', operator: '담당자 변경', 'device.revoke': '기기 강제 로그아웃', 'device.revoke_all': '투표소 계정 종료',
 };
 const RESULTS: Record<string, string> = {
   ok: '정상', not_found: '명부 없음', other_district: '다른 선거구', voted: '이미 투표', already_voted: '이미 투표', rate_limited: '조회 제한',

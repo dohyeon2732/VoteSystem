@@ -325,7 +325,7 @@ export default function AdminRoster() {
       </div>
 
       <Uploader districts={districts} disabled={busy || sum.event_count > 0 || !!sum.purged_at} onDone={() => { reload(); refreshConfig(); }} setMsg={setMsg} />
-      {sum.event_count > 0 && <div className="alert info small">체크 기록이 있어 명부를 교체할 수 없습니다. 리허설 후라면 아래 "체크 기록 초기화"를 먼저 하세요.</div>}
+      {sum.event_count > 0 && <div className="alert info small">체크 기록이 있어 명부를 교체할 수 없습니다. 리허설 후라면 설정 화면의 "전체 초기화"를 먼저 하세요.</div>}
 
       <div className="grid cols-2">
         <div className="card stack">
@@ -401,7 +401,7 @@ export default function AdminRoster() {
             <button className="btn" disabled={busy} onClick={() => startAutoBackup(config.stations).then(() => reload()).catch((e) => { if ((e as Error).name !== 'AbortError') setMsg({ text: (e as Error).message, ok: false }); })}>자동 백업 켜기</button>
           )}
           <h2 style={{ marginTop: 8 }}>복원</h2>
-          <p className="muted small">체크 기록이 비어 있을 때(DB 손실 또는 체크 기록 초기화 직후)만 됩니다. 명부를 다시 올린 뒤 같은 암호화 키로 복원하세요.</p>
+          <p className="muted small">체크 기록이 비어 있을 때(DB 손실 또는 전체 초기화 직후)만 됩니다. 명부를 다시 올린 뒤 같은 암호화 키로 복원하세요.</p>
           <input type="file" accept=".csv" onChange={(e) => { onRestoreFile(e.target.files?.[0]); e.target.value = ''; }} />
           {restoreFile && (
             <div className="row">
@@ -448,12 +448,7 @@ export default function AdminRoster() {
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
           <button className="btn" disabled={busy || sum.event_count > 0 || !!sum.purged_at} onClick={makeFake}>가짜 명부 23,000명 만들기</button>
         </div>
-        <h2 style={{ color: 'var(--danger)', marginTop: 8 }}>체크 기록 초기화</h2>
-        <p className="muted small">모든 체크·마감·조정 기록과 그로 생긴 자동 입력값을 지우고 투표 상태를 해제합니다. 명부·투표소 계정·접근 로그는 남습니다. 되돌릴 수 없으니 먼저 백업하세요.</p>
-        <div className="row">
-          <input className="input" style={{ maxWidth: 220 }} placeholder="체크기록초기화 라고 입력" value={resetText} onChange={(e) => setResetText(e.target.value)} />
-          <button className="btn danger" disabled={busy || resetText.trim() !== '체크기록초기화'} onClick={() => run(() => api('/roster/reset-checks', { body: { confirm: '체크기록초기화' } }).then(() => setResetText('')), '체크 기록을 초기화했습니다.')}>초기화 실행</button>
-        </div>
+        <p className="muted small">리허설이 끝나면 <strong>설정</strong> 화면 맨 아래의 "전체 초기화"로 선거인명부만 남기고 모두 지웁니다.</p>
       </div>
 
       <div className="card stack">
