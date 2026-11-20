@@ -824,7 +824,7 @@ route('POST', '/reset-all', async (ctx) => {
   await resetDeskData(ctx.db);
   for (const t of ['change_request', 'entry', 'audit_log', 'voter_access_log', 'operator_log', 'device_session']) await ctx.db.removeAll(t);
   for (const m of await ctx.db.all<Member>('member')) {
-    if (m.failed_count || m.locked_until || m.pledged_at) await ctx.db.update('member', { id: m.id }, { failed_count: 0, locked_until: null, pledged_at: null });
+    if (m.failed_count || m.locked_until || m.pledged_at || m.last_login_at) await ctx.db.update('member', { id: m.id }, { failed_count: 0, locked_until: null, pledged_at: null, last_login_at: null });
   }
   await ctx.db.update('election', { id: 'main' }, { last_backup_at: null });
   await log(ctx.db, me, 'system.reset', { note: '전체 초기화 (선거인명부·설정·계정만 유지)' });
