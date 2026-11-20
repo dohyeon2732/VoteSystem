@@ -85,7 +85,6 @@ export const TABLES = [
   'voter',
   'ballot_event',
   'tally_window',
-  'shift',
   'voter_access_log',
   'device_session',
   'operator_log',
@@ -168,7 +167,6 @@ export interface TallyWindow {
   /** 마지막으로 넣은 묶음 번호 (JSON). 불일치 때 총관리자 조정 화면에 보여 준다 */
   pad_json?: string | null;
 }
-export interface Shift { id: string; member_id: string; station_id: string; date: string; start_time: string; end_time: string }
 export interface VoterAccessLog {
   id: string; at: string; member_id: string; member_name: string; station_id: string | null;
   action: string; sid_hash8: string | null; result: string | null; note: string | null;

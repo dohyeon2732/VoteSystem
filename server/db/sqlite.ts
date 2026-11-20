@@ -51,8 +51,7 @@ CREATE TABLE IF NOT EXISTS tally_window (
   status TEXT NOT NULL, check_count INTEGER NOT NULL, leave_count INTEGER NOT NULL, tag_count INTEGER, accepted_count INTEGER,
   adjustment INTEGER NOT NULL DEFAULT 0, adjust_reason TEXT, closed_by TEXT NOT NULL, closed_by_name TEXT NOT NULL,
   matched_at TEXT, matched_by_name TEXT);
-CREATE TABLE IF NOT EXISTS shift (
-  id TEXT PRIMARY KEY, member_id TEXT NOT NULL, station_id TEXT NOT NULL, date TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL);
+DROP TABLE IF EXISTS shift;
 CREATE TABLE IF NOT EXISTS voter_access_log (
   id TEXT PRIMARY KEY, at TEXT NOT NULL, member_id TEXT NOT NULL, member_name TEXT NOT NULL, station_id TEXT,
   action TEXT NOT NULL, sid_hash8 TEXT, result TEXT, note TEXT);

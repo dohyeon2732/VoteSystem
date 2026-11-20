@@ -70,9 +70,8 @@ create table if not exists tally_window (
   adjustment int not null default 0, adjust_reason text,
   closed_by text not null, closed_by_name text not null, matched_at text, matched_by_name text);
 create index if not exists tally_window_station_idx on tally_window(station_id, boundary_at);
-create table if not exists shift (
-  id text primary key, member_id text not null references member(id), station_id text not null references station(id),
-  date text not null, start_time text not null, end_time text not null);
+-- 근무표(shift)는 v1.2에서 투표소 공용 계정으로 바뀌며 쓰지 않게 되어 없앤다.
+drop table if exists shift;
 create table if not exists voter_access_log (
   id text primary key, at text not null, member_id text not null, member_name text not null, station_id text,
   action text not null, sid_hash8 text, result text, note text);
@@ -80,7 +79,6 @@ create index if not exists voter_access_log_at_idx on voter_access_log(at);
 alter table voter enable row level security;
 alter table ballot_event enable row level security;
 alter table tally_window enable row level security;
-alter table shift enable row level security;
 alter table voter_access_log enable row level security;
 
 -- ============================================================
