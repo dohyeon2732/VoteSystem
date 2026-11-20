@@ -11,8 +11,8 @@ import type {
   TallyWindow, Voter, VoterAccessLog, VoterKind, BallotPad, Desk, PadMove, PadReading, StationCounts, TagIssue, Dept,
 } from './db/types.js';
 import {
-  activePads, addDepts, allDesks, commitReadings, computeReadings, deptLabel, deskOf, deskView, padView, parseDepts, pickDesk, readingRanges,
-  rebuildDepts, resetDeskData, stationDesks, unassignedDesk, type ReadingItem,
+  addDepts, allDesks, deptLabel, deskOf, deskView, parseDepts, pickDesk, tagBaseline, tagTotalOf,
+  rebuildDepts, resetDeskData, stationDesks, unassignedDesk,
 } from './desks.js';
 import { nowIso, slotEpoch } from './logic/time.js';
 import { createSessionToken, renewedExpiry } from './auth.js';
@@ -533,11 +533,10 @@ route('GET', '/roster/station', async (ctx) => {
   const desk = await deskOf(ctx, station, ctx.req.query.desk_id);
   // 최근 체크: 투표소 기기는 그 기기에서 한 것, 총관리자는 본인이 한 것
   const mine: Record<string, string> = ctx.device ? { device_id: ctx.device.id } : { actor_id: me.id };
-  const [live, wins, recent, pads, issues, desks] = await Promise.all([
+  const [live, wins, recent, issues, desks] = await Promise.all([
     ctx.db.votes.liveCounts(),
     ctx.db.all<TallyWindow>('tally_window', { desk_id: desk.id }, 'boundary_at desc'),
     ctx.db.all<BallotEvent>('ballot_event', { ...mine, station_id: station.id, kind: 'issue' }, 'at desc', 5),
-    activePads(ctx.db, desk.id),
     ctx.db.all<TagIssue>('tag_issue', { desk_id: desk.id }, 'at desc', 20),
     me.role === 'admin' ? stationDesks(ctx.db, station.id) : Promise.resolve([] as Desk[]),
   ]);
@@ -549,7 +548,6 @@ route('GET', '/roster/station', async (ctx) => {
     open_count: Number(l?.open_net ?? 0), open_leave: Number(l?.open_leave_net ?? 0),
     reconciling: reconciling ? { ...reconciling, ...(await ctx.db.votes.windowCounts(reconciling.id)) } : null,
     last_window: wins.find((w) => w.status !== 'reconciling') ?? null,
-    pads: pads.map(padView),
     issue_count: issues.filter((i) => !i.voided_at).length,
     window_issues: reconciling ? issues.filter((i) => i.window_id === reconciling.id && !i.voided_at).map((i) => ({ id: i.id, type: i.type, count: i.count, serial_from: i.serial_from, serial_to: i.serial_to, note: i.note })) : [],
     recent: recent.map((e) => ({ id: e.id, at: e.at, is_leave: e.is_leave, canceled: canceled.has(e.id), source: e.source })),
@@ -598,27 +596,26 @@ async function loadReconciling(ctx: Ctx, me: Member, id: string) {
   return w;
 }
 
-/** 묶음별 마지막 번호로 꼬리표 수를 계산해 대조한다 (FR-101, FR-102). */
+/** 근무자가 센 꼬리표 누적 수로 대조한다 (FR-111, FR-112). 이번 구간 꼬리표 수 = 누적 수 − 직전 누적 수 */
 route('POST', '/roster/close/:id/submit', async (ctx) => {
   const { me } = await rosterGate(ctx);
   const w = await loadReconciling(ctx, me, ctx.params.id);
-  const [c, pads] = await Promise.all([ctx.db.votes.windowCounts(w.id), w.desk_id ? activePads(ctx.db, w.desk_id) : Promise.resolve([] as BallotPad[])]);
-  if (c.net > 0 && pads.length === 0) throw new HttpError(409, 'no_pad', '등록된 묶음이 없습니다. "묶음 추가"로 쓰는 묶음을 먼저 등록하세요.');
-  const { tag_count: tags, items } = computeReadings(pads, ctx.req.body?.readings);
-  const ranges = readingRanges(items);
-  await ctx.db.update('tally_window', { id: w.id }, { check_count: c.net, leave_count: c.leave_net, tag_count: tags, pad_json: JSON.stringify(items) });
+  const total = int(ctx.req.body?.total, '꼬리표 누적 수');
+  const [c, prev] = await Promise.all([ctx.db.votes.windowCounts(w.id), w.desk_id ? tagBaseline(ctx.db, w.desk_id) : Promise.resolve(0)]);
+  const tags = total - prev;
+  const pad_json = JSON.stringify({ total, prev });
+  await ctx.db.update('tally_window', { id: w.id }, { check_count: c.net, leave_count: c.leave_net, tag_count: tags, pad_json });
   if (tags !== c.net) {
-    await accessLog(ctx, w.station_id, 'close', null, 'mismatch', `꼬리표 ${tags} / 체크 ${c.net}`);
+    await accessLog(ctx, w.station_id, 'close', null, 'mismatch', `꼬리표 누적 ${total} / 체크 누적 ${prev + c.net}`);
     const diff = tags - c.net;
-    throw new HttpError(409, 'mismatch', `꼬리표 수와 체크 인원이 다릅니다. 꼬리표가 ${Math.abs(diff)}장 ${diff > 0 ? '많습니다' : '적습니다'}.`, { check_count: c.net, tag_count: tags, diff, ranges });
+    throw new HttpError(409, 'mismatch', `꼬리표 수와 체크 인원이 다릅니다. 꼬리표가 ${Math.abs(diff)}장 ${diff > 0 ? '많습니다' : '적습니다'}. (입력한 꼬리표 ${total}장 · 시스템 ${prev + c.net}명)`, { check_count: c.net, tag_count: tags, diff, total, expected: prev + c.net });
   }
-  const done: TallyWindow = { ...w, status: 'matched', check_count: c.net, leave_count: c.leave_net, tag_count: tags, accepted_count: c.net, matched_at: nowIso(), matched_by_name: whoName(ctx) };
-  await commitReadings(ctx, done, items);
+  const done: TallyWindow = { ...w, status: 'matched', check_count: c.net, leave_count: c.leave_net, tag_count: tags, accepted_count: c.net, matched_at: nowIso(), matched_by_name: whoName(ctx), pad_json };
   await ctx.db.update('tally_window', { id: w.id }, { status: done.status, accepted_count: done.accepted_count, matched_at: done.matched_at, matched_by_name: done.matched_by_name });
-  await accessLog(ctx, w.station_id, 'close', null, 'matched', `${c.net}명`);
-  await log(ctx.db, actorOf(ctx), 'tally.match', { station_id: w.station_id, note: `마감 ${hm(Date.parse(w.boundary_at))} · 체크 ${c.net} = 꼬리표 ${tags}` });
+  await accessLog(ctx, w.station_id, 'close', null, 'matched', `${c.net}명 · 누적 ${total}장`);
+  await log(ctx.db, actorOf(ctx), 'tally.match', { station_id: w.station_id, note: `마감 ${hm(Date.parse(w.boundary_at))} · 체크 ${c.net} = 꼬리표 ${tags} (누적 ${total})` });
   await syncEntriesForWindow(ctx.db, actorOf(ctx), done);
-  return { window: done, ranges };
+  return { window: done };
 });
 
 route('POST', '/roster/close/:id/adjust', async (ctx) => {
@@ -627,22 +624,19 @@ route('POST', '/roster/close/:id/adjust', async (ctx) => {
   const w = await loadReconciling(ctx, me, ctx.params.id);
   const reason = str(ctx.req.body?.reason, '조정 사유', 300);
   const accepted = int(ctx.req.body?.accepted_count, '인정 인원');
-  const c = await ctx.db.votes.windowCounts(w.id);
-  // 묶음 번호: 새로 넣었으면 그 값, 아니면 근무자가 마지막으로 넣은 값. 둘 다 없으면 묶음은 그대로 둔다
-  const pads = w.desk_id ? await activePads(ctx.db, w.desk_id) : [];
-  let items: ReadingItem[] = [];
-  if (Array.isArray(ctx.req.body?.readings) && ctx.req.body.readings.length) items = computeReadings(pads, ctx.req.body.readings).items;
-  else if (w.pad_json) { try { items = (JSON.parse(w.pad_json) as ReadingItem[]).filter((i) => pads.some((p) => p.id === i.pad_id && p.used_total === i.prev_total)); } catch { items = []; } }
-  const tags = items.length ? items.reduce((a, i) => a + (i.used_total - i.prev_total), 0) : w.tag_count;
+  const [c, prev] = await Promise.all([ctx.db.votes.windowCounts(w.id), w.desk_id ? tagBaseline(ctx.db, w.desk_id) : Promise.resolve(0)]);
+  // 꼬리표 누적 수: 총관리자가 새로 넣었으면 그 값, 아니면 근무자가 마지막으로 넣은 값, 둘 다 없으면 인정 인원만큼 늘어난 것으로 본다 (FR-113)
+  const given = ctx.req.body?.total;
+  const total = given !== undefined && given !== null && given !== '' ? int(given, '꼬리표 누적 수') : tagTotalOf(w)?.total ?? prev + accepted;
+  const tags = total - prev;
   const done: TallyWindow = {
     ...w, status: 'adjusted', check_count: c.net, leave_count: c.leave_net, tag_count: tags, accepted_count: accepted,
-    adjustment: accepted - c.net, adjust_reason: reason, matched_at: nowIso(), matched_by_name: me.name, pad_json: items.length ? JSON.stringify(items) : w.pad_json ?? null,
+    adjustment: accepted - c.net, adjust_reason: reason, matched_at: nowIso(), matched_by_name: me.name, pad_json: JSON.stringify({ total, prev }),
   };
-  await commitReadings(ctx, done, items);
   const { id: _id, ...patch } = done;
   await ctx.db.update('tally_window', { id: w.id }, patch);
-  await accessLog(ctx, w.station_id, 'adjust', null, 'adjusted', `체크 ${c.net} · 꼬리표 ${tags ?? '-'} · 인정 ${accepted} · ${reason}`);
-  await log(ctx.db, me, 'tally.adjust', { station_id: w.station_id, before_json: JSON.stringify({ check_count: c.net, tag_count: tags }), after_json: JSON.stringify({ accepted_count: accepted, adjustment: accepted - c.net }), note: reason });
+  await accessLog(ctx, w.station_id, 'adjust', null, 'adjusted', `체크 ${c.net} · 꼬리표 ${tags} (누적 ${total}) · 인정 ${accepted} · ${reason}`);
+  await log(ctx.db, me, 'tally.adjust', { station_id: w.station_id, before_json: JSON.stringify({ check_count: c.net, tag_count: tags, tag_total: total }), after_json: JSON.stringify({ accepted_count: accepted, adjustment: accepted - c.net }), note: reason });
   await syncEntriesForWindow(ctx.db, me, done);
   return { window: done };
 });
@@ -650,23 +644,20 @@ route('POST', '/roster/close/:id/adjust', async (ctx) => {
 route('GET', '/roster/windows', async (ctx) => {
   const me = requireAuth(ctx);
   const cfg = await loadConfig(ctx.db);
-  const [all, extras, desks, pads, issues] = await Promise.all([
+  const [all, extras, desks, issues] = await Promise.all([
     ctx.db.all<TallyWindow>('tally_window', undefined, 'boundary_at'),
     tallyExtras(ctx.db, cfg.days, cfg.stations, cfg.election.extension_enabled),
-    allDesks(ctx.db), ctx.db.all<BallotPad>('ballot_pad').catch(() => [] as BallotPad[]), ctx.db.all<TagIssue>('tag_issue').catch(() => [] as TagIssue[]),
+    allDesks(ctx.db), ctx.db.all<TagIssue>('tag_issue').catch(() => [] as TagIssue[]),
   ]);
   // 투표소 계정은 자기 투표소의 모든 창구 (FR-94c, 15.13). 총관리자·선관위원은 전체 열람
   const mine = (id: string) => me.role !== 'station' || id === me.station_id;
   const wins = all.filter((w) => mine(w.station_id)).map((w) => {
-    let ranges: ReturnType<typeof readingRanges> = [];
-    try { ranges = w.pad_json ? readingRanges(JSON.parse(w.pad_json) as ReadingItem[]) : []; } catch { ranges = []; }
     const { pad_json: _p, ...rest } = w;
-    return { ...rest, desk_name: desks.find((d) => d.id === w.desk_id)?.name ?? null, ranges, issue_count: issues.filter((i) => i.window_id === w.id && !i.voided_at).length };
+    return { ...rest, desk_name: desks.find((d) => d.id === w.desk_id)?.name ?? null, tag_total: tagTotalOf(w)?.total ?? null, issue_count: issues.filter((i) => i.window_id === w.id && !i.voided_at).length };
   });
   return {
     windows: wins, stations: extras.stations.filter((s) => mine(s.station_id)),
     desks: desks.filter((d) => mine(d.station_id) && !d.merged_into).map(deskView),
-    pads: pads.filter((p) => mine(p.station_id)).map(padView),
     my_desk_id: ctx.device?.desk_id ?? null, server_now: nowIso(),
   };
 });

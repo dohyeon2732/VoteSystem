@@ -1,11 +1,12 @@
 /**
- * 창구 단위 대조, 꼬리표 일련번호, 이슈 신고 (명세 v1.4 15.13)
- * 한 투표소 안에 학과 단위 불출 창구가 여러 개 있고, 창구마다 묶음·마감이 따로다.
+ * 창구 단위 대조, 꼬리표 누적 수 마감, 이슈 신고 (명세 15.13, 15.14)
+ * 한 투표소 안에 학과 단위 불출 창구가 여러 개 있고, 창구마다 마감이 따로다.
+ * v1.5부터 근무자 화면은 묶음 번호를 쓰지 않는다. 묶음 관련 경로와 테이블은 예전 기록을 위해 남겨 둔다.
  */
 import { randomUUID } from 'node:crypto';
 import { HttpError, int, log, requireAdmin, requireAuth, route, str, type Ctx } from './core.js';
 import type {
-  BallotPad, Db, Dept, Desk, DeviceSession, IssueType, PadMove, PadReading, Station, TagIssue, TallyWindow, Voter,
+  BallotPad, Db, Dept, Desk, DeviceSession, IssueType, PadMove, Station, TagIssue, TallyWindow, Voter,
 } from './db/types.js';
 import { nowIso } from './logic/time.js';
 import { accessLog, gateAt, invalidatePlaces, operatorName, placesOf, whoName } from './roster.js';
@@ -349,51 +350,35 @@ route('PUT', '/pads/:id', async (ctx) => {
   return { ok: true };
 });
 
-// ---------- 번호로 마감 (FR-101~103) ----------
-export interface ReadingItem { pad_id: string; first_no: number; last_no: number | null; prev_total: number; used_total: number; by_count: boolean; pad_last_no: number }
-/** 창구의 쓰는 중인 묶음마다 마지막 번호(또는 장수)를 받아 이번 구간 꼬리표 수를 계산한다. */
-export function computeReadings(pads: BallotPad[], input: unknown): { tag_count: number; items: ReadingItem[] } {
-  const list = Array.isArray(input) ? (input as any[]) : [];
-  const items: ReadingItem[] = pads.map((p) => {
-    const r = list.find((x) => x?.pad_id === p.id);
-    const size = p.last_no - p.first_no + 1;
-    const base = { pad_id: p.id, first_no: p.first_no, prev_total: p.used_total, pad_last_no: p.last_no };
-    if (!r) throw new HttpError(400, 'reading_required', `묶음 ${padLabel(p)}의 마지막 번호를 넣으세요.`);
-    if (r.unused === true) return { ...base, last_no: p.used_no, used_total: p.used_total, by_count: p.by_count };
-    if (r.count !== undefined && r.count !== null && r.count !== '') {
-      const c = int(r.count, '꼬리표 장수');
-      if (c > size) throw new HttpError(400, 'bad_reading', `묶음 ${padLabel(p)}은 ${size}장입니다.`);
-      if (c < p.used_total) throw new HttpError(400, 'bad_reading', `묶음 ${padLabel(p)}: 직전 마감(${p.used_total}장)보다 적을 수 없습니다.`);
-      return { ...base, last_no: null, used_total: c, by_count: true };
-    }
-    const last = parseSerial(r.last_no, '마지막 번호');
-    if (last < p.first_no || last > p.last_no) throw new HttpError(400, 'bad_reading', `${fmtNo(last)}번은 묶음 ${padLabel(p)}의 번호가 아닙니다.`);
-    const used = last - p.first_no + 1;
-    if (used < p.used_total) throw new HttpError(400, 'bad_reading', `묶음 ${padLabel(p)}: 직전 마감 번호(${fmtNo(p.first_no + p.used_total - 1)})보다 작습니다.`);
-    return { ...base, last_no: last, used_total: used, by_count: false };
-  });
-  return { tag_count: items.reduce((a, i) => a + (i.used_total - i.prev_total), 0), items };
+// ---------- 꼬리표 누적 수로 마감 (v1.5, FR-111~113) ----------
+/** 마감 때 근무자가 센 "이 창구의 꼬리표 누적 수"와 그 직전 누적 수. 구간의 pad_json에 남긴다. */
+export interface TagTotal { total: number; prev: number }
+export function tagTotalOf(w: Pick<TallyWindow, 'pad_json'>): TagTotal | null {
+  try {
+    const j = w.pad_json ? JSON.parse(w.pad_json) : null;
+    return j && !Array.isArray(j) && Number.isFinite(j.total) ? { total: Number(j.total), prev: Number(j.prev ?? 0) } : null;
+  } catch { return null; }
 }
-/** 일치·조정으로 구간이 끝날 때 묶음 번호를 확정한다. 장수로 넣은 묶음은 판독 불가 이슈를 남긴다 (FR-103). */
-export async function commitReadings(ctx: Ctx, win: TallyWindow, items: ReadingItem[]) {
-  const at = nowIso();
-  if (items.length) await ctx.db.insertMany<PadReading>('pad_reading', items.map((i) => ({ id: randomUUID(), window_id: win.id, pad_id: i.pad_id, last_no: i.last_no, prev_total: i.prev_total, used_total: i.used_total, by_count: i.by_count })));
-  for (const i of items) {
-    await ctx.db.update('ballot_pad', { id: i.pad_id }, { used_no: i.last_no ?? (i.used_total > 0 ? i.first_no + i.used_total - 1 : null), used_total: i.used_total, by_count: i.by_count, exhausted_at: i.first_no + i.used_total - 1 >= i.pad_last_no ? at : null });
-    if (i.by_count && i.used_total > i.prev_total) {
-      await ctx.db.insert<TagIssue>('tag_issue', {
-        id: randomUUID(), station_id: win.station_id, desk_id: win.desk_id ?? null, window_id: win.id, pad_id: i.pad_id, type: 'unreadable', serial_from: null, serial_to: null, count: 1,
-        note: `마감 때 번호 대신 장수(${i.used_total}장)로 입력`, device_id: ctx.device?.id ?? null, operator_name: whoName(ctx), at,
-        reviewed_by: null, reviewed_at: null, voided_by: null, voided_at: null, void_reason: null,
-      });
+/**
+ * 창구의 직전 꼬리표 누적 수: 끝난 구간을 차례로 보며, 누적 수가 적힌 구간은 그 값으로, 없는 구간(v1.4 기록)은 꼬리표 수를 더한다.
+ * 이 창구로 합친 창구의 꼬리표도 이 창구에 쌓여 있으므로 함께 더한다.
+ */
+export async function tagBaseline(db: Db, deskId: string): Promise<number> {
+  const [desks, wins] = await Promise.all([allDesks(db), db.all<TallyWindow>('tally_window', undefined, 'boundary_at')]);
+  const ids = new Set([deskId]);
+  for (let grew = true; grew;) { grew = false; for (const d of desks) if (d.merged_into && ids.has(d.merged_into) && !ids.has(d.id)) { ids.add(d.id); grew = true; } }
+  let sum = 0;
+  for (const id of ids) {
+    let cum = 0;
+    for (const w of wins) {
+      if (w.desk_id !== id || w.status === 'reconciling') continue;
+      const t = tagTotalOf(w);
+      cum = t ? t.total : cum + (w.tag_count ?? w.accepted_count ?? 0);
     }
+    sum += cum;
   }
+  return sum;
 }
-/** 화면용: 묶음별 이번 구간 사용 범위 */
-export const readingRanges = (items: ReadingItem[]) => items.map((i) => ({
-  pad_id: i.pad_id, label: `${fmtNo(i.first_no)}~${fmtNo(i.pad_last_no)}`, used: i.used_total - i.prev_total, by_count: i.by_count,
-  from_no: i.used_total > i.prev_total ? i.first_no + i.prev_total : null, to_no: i.used_total > i.prev_total ? i.first_no + i.used_total - 1 : null,
-}));
 
 // ---------- 이슈 신고 (FR-104, FR-105) ----------
 route('POST', '/roster/issues', async (ctx) => {

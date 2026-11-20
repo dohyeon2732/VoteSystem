@@ -74,13 +74,13 @@ export interface TallyWindow {
   id: string; station_id: string; date: string; opened_at: string; boundary_at: string; status: 'reconciling' | 'matched' | 'adjusted';
   check_count: number; leave_count: number; tag_count: number | null; accepted_count: number | null; adjustment: number; adjust_reason: string | null;
   closed_by_name: string; matched_at: string | null; matched_by_name: string | null; net?: number; leave_net?: number;
-  desk_id?: string | null; desk_name?: string | null; ranges?: PadRange[]; issue_count?: number;
+  desk_id?: string | null; desk_name?: string | null; tag_total?: number | null; issue_count?: number;
 }
 export interface StationStatus {
   station: Station; hours: StationHours; open_count: number; open_leave: number;
   reconciling: (TallyWindow & { net: number; leave_net: number }) | null; last_window: TallyWindow | null;
   recent: { id: string; at: string; is_leave: boolean; canceled: boolean; source: string }[]; server_now: string;
-  desk: DeskInfo; desks: DeskInfo[]; pads: PadInfo[]; issue_count: number;
+  desk: DeskInfo; desks: DeskInfo[]; issue_count: number;
   window_issues: { id: string; type: IssueType; count: number; serial_from: number | null; serial_to: number | null; note: string | null }[];
 }
 export interface RosterSummary {
@@ -161,12 +161,12 @@ export const remainingToThreshold = (voters: number, cumulative: number, thresho
 // ---- 창구·묶음·이슈 (v1.4) ----
 export interface DeskInfo { id: string; station_id: string; name: string; depts: string[]; is_all: boolean; is_unassigned: boolean; merged_into?: string | null }
 export interface DeskList { desks: (DeskInfo & { device_count: number })[]; depts: { name: string; desk_id: string | null }[] }
-export interface PadInfo { id: string; desk_id: string; first_no: number; last_no: number; used_no: number | null; used_total: number; by_count: boolean; exhausted: boolean; label: string }
-export interface PadRange { pad_id: string; label: string; used: number; by_count: boolean; from_no: number | null; to_no: number | null }
 export type IssueType = 'void' | 'lost' | 'damaged' | 'unreadable' | 'pad_defect' | 'other';
 export const ISSUE_TYPES: Record<IssueType, string> = {
   void: '폐기 용지', lost: '꼬리표 분실', damaged: '꼬리표 훼손', unreadable: '번호 판독 불가', pad_defect: '묶음 이상', other: '기타',
 };
+/** 새로 신고할 때 고르는 유형 (v1.5). 번호 판독 불가·묶음 이상은 예전 기록 표시용으로만 남긴다 */
+export const ISSUE_CHOICES: IssueType[] = ['void', 'lost', 'damaged', 'other'];
 export interface TagIssueRow {
   id: string; station_id: string; desk_id: string | null; window_id: string | null; pad_id: string | null; type: IssueType;
   serial_from: number | null; serial_to: number | null; count: number; note: string | null; operator_name: string; at: string;
@@ -174,7 +174,6 @@ export interface TagIssueRow {
   desk_name: string | null; pad_label: string | null;
 }
 export const fmtNo = (n: number) => String(n).padStart(6, '0');
-export const rangeText = (r: PadRange) => (r.from_no === null ? '안 씀' : r.by_count ? `${r.used}장 (장수 입력)` : `${fmtNo(r.from_no)}~${fmtNo(r.to_no!)} (${r.used}장)`);
 /** 학과 아래 전공이 있으면 "학과 > 전공"으로 저장된다. 화면에는 "학과 전공"으로 보여 준다. */
 export const DEPT_SEP = ' > ';
 export const deptLabel = (s: string) => s.split(DEPT_SEP).join(' ');

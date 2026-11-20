@@ -1,24 +1,17 @@
 import { useState } from 'react';
-import { api, deptLabel, fmtNo, fmtTime, ISSUE_TYPES, type DeskInfo, type DeskList, type IssueType, type TagIssueRow } from '../apis';
+import { api, deptLabel, fmtNo, fmtTime, ISSUE_TYPES, type DeskList, type IssueType, type TagIssueRow } from '../apis';
 import { useStore } from '../app/store';
 import { usePolling } from '../hooks/usePolling';
-import Sheet from '../components/Sheet';
 import { downloadText, toCsv } from '../data/sheet';
 
-interface PadRow { id: string; station_id: string; desk_id: string; first_no: number; last_no: number; used_no: number | null; used_total: number; by_count: boolean; opened_at: string; opened_by: string; exhausted_at: string | null }
-interface PadData { pads: PadRow[]; desks: DeskInfo[]; moves: { id: string; pad_id: string; from_desk_id: string; to_desk_id: string; at: string; operator_name: string }[]; pad_size: number; serial_max: number }
-
-/** S-15 꼬리표 이슈·묶음 현황·창구 관리 (FR-105, FR-100b, FR-107) */
+/** S-15 꼬리표 이슈·창구 관리 (FR-105, FR-107) */
 export default function AdminIssues() {
   const { config } = useStore();
   const issues = usePolling(() => api<{ issues: TagIssueRow[] }>('/roster/issues'), 20000, []);
-  const pads = usePolling(() => api<PadData>('/pads'), 20000, []);
   const [fStation, setFStation] = useState('');
   const [fType, setFType] = useState('');
   const [showVoided, setShowVoided] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [padEdit, setPadEdit] = useState<PadRow | null>(null);
-  const [padForm, setPadForm] = useState({ used_total: '', desk_id: '', reason: '' });
   const [deskStation, setDeskStation] = useState('');
   const [deskList, setDeskList] = useState<DeskList | null>(null);
   const [newDepts, setNewDepts] = useState<string[]>([]);
@@ -28,33 +21,23 @@ export default function AdminIssues() {
 
   if (!config) return <main><p className="muted center">불러오는 중…</p></main>;
   const sname = (id: string) => config.stations.find((s) => s.id === id)?.name ?? '?';
-  const desks = pads.data?.desks ?? [];
-  const dname = (id: string | null) => desks.find((d) => d.id === id)?.name ?? '-';
   const run = async (fn: () => Promise<unknown>, done?: string) => {
     setMsg(null);
-    try { await fn(); await Promise.all([issues.reload(), pads.reload()]); if (done) setMsg({ ok: true, text: done }); } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    try { await fn(); await issues.reload(); if (done) setMsg({ ok: true, text: done }); } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
   };
   const serial = (i: TagIssueRow) => (i.serial_from === null ? '' : i.serial_to !== null && i.serial_to !== i.serial_from ? `${fmtNo(i.serial_from)}~${fmtNo(i.serial_to)}` : fmtNo(i.serial_from));
   const all = issues.data?.issues ?? [];
   const list = all.filter((i) => (!fStation || i.station_id === fStation) && (!fType || i.type === fType) && (showVoided || !i.voided_at));
   const live = all.filter((i) => !i.voided_at);
   const exportCsv = () => downloadText('꼬리표_이슈.csv', toCsv([
-    ['시각', '투표소', '창구', '유형', '묶음', '일련번호', '장수', '메모', '담당자', '확인', '확인자', '무효', '무효 사유'],
-    ...all.map((i) => [fmtTime(i.at), sname(i.station_id), i.desk_name ?? '', ISSUE_TYPES[i.type], i.pad_label ?? '', serial(i), i.count, i.note ?? '', i.operator_name,
+    ['시각', '투표소', '창구', '유형', '용지 번호', '장수', '메모', '담당자', '확인', '확인자', '무효', '무효 사유'],
+    ...all.map((i) => [fmtTime(i.at), sname(i.station_id), i.desk_name ?? '', ISSUE_TYPES[i.type], serial(i), i.count, i.note ?? '', i.operator_name,
       i.reviewed_at ? '확인' : '미확인', i.reviewed_by ?? '', i.voided_at ? '무효' : '', i.void_reason ?? '']),
   ]));
   const voidIssue = (i: TagIssueRow) => {
     const reason = window.prompt('무효로 처리하는 사유를 적어 주세요.');
     if (reason?.trim()) run(() => api(`/roster/issues/${i.id}/void`, { body: { reason } }));
   };
-
-  // 묶음 현황: 등록되지 않은 번호대 수
-  const padRows = pads.data?.pads ?? [];
-  const totalPads = pads.data ? Math.floor(pads.data.serial_max / pads.data.pad_size) : 0;
-  const savePad = () => padEdit && run(async () => {
-    await api(`/pads/${padEdit.id}`, { method: 'PUT', body: { used_total: padForm.used_total === '' ? undefined : Number(padForm.used_total), desk_id: padForm.desk_id || undefined, reason: padForm.reason } });
-    setPadEdit(null);
-  }, '묶음을 정정했습니다.');
 
   const loadDesks = async (stationId: string) => {
     setDeskStation(stationId); setDeskList(null); setNewDepts([]); setDeskEdit(null);
@@ -63,7 +46,7 @@ export default function AdminIssues() {
   // 결과는 창구 관리 칸 안에 보여 준다 (페이지 맨 위 알림은 스크롤하면 안 보인다)
   const deskAction = async (fn: () => Promise<unknown>, done: string) => {
     setDeskMsg(null);
-    try { await fn(); await Promise.all([loadDesks(deskStation), pads.reload()]); setDeskMsg({ ok: true, text: done }); }
+    try { await fn(); await loadDesks(deskStation); setDeskMsg({ ok: true, text: done }); }
     catch (e) { setDeskMsg({ ok: false, text: (e as Error).message }); }
   };
   const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
@@ -90,14 +73,14 @@ export default function AdminIssues() {
         </div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>시각</th><th>투표소 · 창구</th><th>유형</th><th>묶음 · 번호</th><th className="num">장수</th><th>메모</th><th>담당자</th><th></th></tr></thead>
+            <thead><tr><th>시각</th><th>투표소 · 창구</th><th>유형</th><th>용지 번호</th><th className="num">장수</th><th>메모</th><th>담당자</th><th></th></tr></thead>
             <tbody>
               {list.map((i) => (
                 <tr key={i.id} style={i.voided_at ? { opacity: 0.5 } : undefined}>
                   <td>{fmtTime(i.at)}</td>
                   <td>{sname(i.station_id)} · {i.desk_name ?? '-'}</td>
                   <td>{ISSUE_TYPES[i.type]}</td>
-                  <td className="mono">{[i.pad_label, serial(i)].filter(Boolean).join(' · ') || '-'}</td>
+                  <td className="mono">{serial(i) || '-'}</td>
                   <td className="num">{i.count}</td>
                   <td className="small">{i.note}{i.voided_at && <div className="muted">무효: {i.void_reason}</div>}</td>
                   <td className="small muted">{i.operator_name}</td>
@@ -113,29 +96,6 @@ export default function AdminIssues() {
                 </tr>
               ))}
               {list.length === 0 && <tr><td colSpan={8} className="muted center">신고된 이슈가 없습니다.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="card stack">
-        <h2>묶음 현황</h2>
-        <p className="muted small">등록된 묶음 {padRows.length}개 / 전체 {totalPads}개 ({fmtNo(1)}~{fmtNo(pads.data?.serial_max ?? 0)}) · 다 쓴 묶음 {padRows.filter((p) => p.exhausted_at).length}개 · 이동 {pads.data?.moves.length ?? 0}건</p>
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>번호대</th><th>투표소 · 창구</th><th className="num">사용</th><th>직전 마감 번호</th><th>등록</th><th></th></tr></thead>
-            <tbody>
-              {padRows.map((p) => (
-                <tr key={p.id}>
-                  <td className="mono" style={{ fontWeight: 600 }}>{fmtNo(p.first_no)}~{fmtNo(p.last_no)}</td>
-                  <td>{sname(p.station_id)} · {dname(p.desk_id)}</td>
-                  <td className="num">{p.used_total}{p.exhausted_at ? <span className="small muted"> (다 씀)</span> : null}</td>
-                  <td className="mono">{p.used_total === 0 ? '-' : p.by_count || p.used_no === null ? `${p.used_total}장 (장수 입력)` : fmtNo(p.used_no)}</td>
-                  <td className="small muted">{fmtTime(p.opened_at)} · {p.opened_by}{(pads.data?.moves ?? []).filter((m) => m.pad_id === p.id).map((m) => <div key={m.id}>{fmtTime(m.at)} {dname(m.from_desk_id)} → {dname(m.to_desk_id)} ({m.operator_name})</div>)}</td>
-                  <td><button className="btn sm ghost" onClick={() => { setPadEdit(p); setPadForm({ used_total: String(p.used_total), desk_id: p.desk_id, reason: '' }); }}>정정</button></td>
-                </tr>
-              ))}
-              {padRows.length === 0 && <tr><td colSpan={6} className="muted center">등록된 묶음이 없습니다.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -159,7 +119,7 @@ export default function AdminIssues() {
                     {!d.is_unassigned && <button className="btn sm ghost" onClick={() => { const name = window.prompt('창구 이름', d.name); if (name?.trim() && name.trim() !== d.name) deskAction(() => api(`/desks/${d.id}`, { method: 'PUT', body: { name } }), '창구 이름을 바꿨습니다.'); }}>이름</button>}
                     {!d.is_unassigned && !d.is_all && <button className="btn sm ghost" onClick={() => setDeskEdit(deskEdit?.id === d.id ? null : { id: d.id, depts: d.depts })}>학과</button>}
                     {deskList.desks.length > 1 && (
-                      <select className="input" style={{ width: 150 }} value="" onChange={(e) => { const to = deskList.desks.find((x) => x.id === e.target.value); if (to && window.confirm(`"${d.name}" 창구를 "${to.name}" 창구로 합칠까요? 묶음과 기기가 옮겨지고 되돌릴 수 없습니다.`)) deskAction(() => api(`/desks/${d.id}/merge`, { body: { into_id: to.id } }), '창구를 합쳤습니다.'); }}>
+                      <select className="input" style={{ width: 150 }} value="" onChange={(e) => { const to = deskList.desks.find((x) => x.id === e.target.value); if (to && window.confirm(`"${d.name}" 창구를 "${to.name}" 창구로 합칠까요? 기기가 옮겨지고 되돌릴 수 없습니다. 두 창구의 꼬리표는 합친 창구에서 함께 셉니다.`)) deskAction(() => api(`/desks/${d.id}/merge`, { body: { into_id: to.id } }), '창구를 합쳤습니다.'); }}>
                         <option value="">다른 창구로 합치기</option>
                         {deskList.desks.filter((x) => x.id !== d.id).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
                       </select>
@@ -201,21 +161,6 @@ export default function AdminIssues() {
         )}
       </div>
 
-      <Sheet open={!!padEdit} onClose={() => setPadEdit(null)} title="묶음 정정 (총관리자)">
-        {padEdit && (
-          <div className="stack">
-            <p className="muted small">번호 건너뜀·잘못 입력한 마감 번호 등을 바로잡을 때만 씁니다. 변경 로그에 남습니다.</p>
-            <div className="row between"><strong className="mono">{fmtNo(padEdit.first_no)}~{fmtNo(padEdit.last_no)}</strong><span className="muted">{sname(padEdit.station_id)} · {dname(padEdit.desk_id)}</span></div>
-            <div className="field"><label>누적 사용 장수 (직전 마감 기준)</label><input className="input" inputMode="numeric" value={padForm.used_total} onChange={(e) => setPadForm({ ...padForm, used_total: e.target.value.replace(/[^0-9]/g, '') })} /></div>
-            <div className="field"><label>창구</label>
-              <select className="input" value={padForm.desk_id} onChange={(e) => setPadForm({ ...padForm, desk_id: e.target.value })}>
-                {desks.filter((d) => !d.merged_into).map((d) => <option key={d.id} value={d.id}>{sname(d.station_id)} · {d.name}</option>)}
-              </select></div>
-            <div className="field"><label>사유</label><input className="input" value={padForm.reason} onChange={(e) => setPadForm({ ...padForm, reason: e.target.value })} placeholder="예: 마감 번호 오입력 정정" /></div>
-            <button className="btn primary block" disabled={!padForm.reason.trim()} onClick={savePad}>정정 저장</button>
-          </div>
-        )}
-      </Sheet>
     </main>
   );
 }

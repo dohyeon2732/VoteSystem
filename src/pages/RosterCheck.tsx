@@ -10,7 +10,6 @@ import {
   api,
   ApiError,
   fmtHM,
-  fmtNo,
   fmtNum,
   type LookupResult,
   type RosterMe,
@@ -21,11 +20,6 @@ import Pledge, { OperatorForm } from "../components/Pledge";
 import Sheet from "../components/Sheet";
 import {
   IssueForm,
-  PadForm,
-  ReadingInputs,
-  readingsBody,
-  readingsTotal,
-  type ReadingState,
 } from "../components/DeskTools";
 
 const RESULT_TTL_MS = 30_000;
@@ -48,9 +42,8 @@ export default function RosterCheck() {
   const [done, setDone] = useState<Done | null>(null);
   const [busy, setBusy] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
-  const [readings, setReadings] = useState<ReadingState>({});
+  const [tagInput, setTagInput] = useState("");
   const [adminDesk, setAdminDesk] = useState("");
-  const [padMode, setPadMode] = useState<"add" | "receive" | null>(null);
   const [issueOpen, setIssueOpen] = useState(false);
   const [mismatch, setMismatch] = useState<string | null>(null);
   const [missedMode, setMissedMode] = useState(false);
@@ -271,7 +264,7 @@ export default function RosterCheck() {
         body: { station_id: stationId, operator_name: operator, desk_id: isAdmin ? adminDesk || undefined : undefined },
       });
       await loadStatus();
-      setReadings({});
+      setTagInput("");
       setMismatch(null);
       setCloseOpen(true);
     } catch (e2) {
@@ -287,7 +280,7 @@ export default function RosterCheck() {
     setMismatch(null);
     try {
       await api(`/roster/close/${status.reconciling.id}/submit`, {
-        body: { readings: readingsBody(status.pads, readings) },
+        body: { total: Number(tagInput) },
       });
       setCloseOpen(false);
       setMissedMode(false);
@@ -303,8 +296,6 @@ export default function RosterCheck() {
   };
 
   const rec = status?.reconciling ?? null;
-  const pads = status?.pads ?? [];
-  const tagTotal = readingsTotal(pads, readings);
   const deskArg = isAdmin ? adminDesk || undefined : undefined;
   const now = Date.now();
 
@@ -437,17 +428,17 @@ export default function RosterCheck() {
             {rec ? (
               <div className="alert warn row between" style={{ gap: 8 }}>
                 <span>
-                  대조 중 · {fmtHM(rec.boundary_at)} 마감분 {fmtNum(rec.net)}명
+                  대조 중 · {fmtHM(rec.boundary_at)} 마감분
                 </span>
                 <button
                   className="btn sm primary"
                   onClick={() => {
-                    setReadings({});
+                    setTagInput("");
                     setMismatch(null);
                     setCloseOpen(true);
                   }}
                 >
-                  묶음 번호 입력
+                  꼬리표 수 입력
                 </button>
               </div>
             ) : (
@@ -459,64 +450,13 @@ export default function RosterCheck() {
                 꼬리표 마감 (매 정각 / 근무자 교대 직전)
               </button>
             )}
-            {/* 묶음 (FR-100): 번호로 마감하려면 쓰는 묶음이 등록되어 있어야 한다 */}
-            <div className="stack" style={{ gap: 6 }}>
-              <div className="row between">
-                <strong>쓰는 중인 묶음</strong>
-                <span className="small muted">
-                  {status.issue_count > 0 ? `신고한 이슈 ${status.issue_count}건` : ""}
-                </span>
-              </div>
-              {pads.length === 0 ? (
-                <div className="alert warn small">
-                  묶음을 등록하세요. 새 묶음을 쓰기 직전에 "묶음 추가"로 첫 번호를 넣습니다. 등록하지 않아도 불출은 되지만 마감은 할 수 없습니다.
-                </div>
-              ) : (
-                <div className="list">
-                  {pads.map((p) => (
-                    <div key={p.id} className="list-item">
-                      <div>
-                        <div className="title">{p.label}</div>
-                        <div className="sub">
-                          {p.used_total > 0
-                            ? `직전 마감 ${p.by_count || p.used_no === null ? `${p.used_total}장` : fmtNo(p.used_no)} · ${p.used_total}장 사용`
-                            : "아직 마감 전"}
-                        </div>
-                      </div>
-                      <div className="right">
-                        {p.used_total === 0 && !rec && (
-                          <button
-                            className="btn sm ghost"
-                            disabled={busy}
-                            onClick={async () => {
-                              if (!window.confirm(`묶음 ${p.label} 등록을 지울까요?`)) return;
-                              try {
-                                await api(`/roster/pads/${p.id}?station_id=${encodeURIComponent(stationId)}`, { method: "DELETE" });
-                                await loadStatus();
-                              } catch (e2) {
-                                setErr((e2 as Error).message);
-                              }
-                            }}
-                          >
-                            삭제
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-                <button className="btn sm" onClick={() => setPadMode("add")}>
-                  묶음 추가
-                </button>
-                <button className="btn sm ghost" onClick={() => setPadMode("receive")}>
-                  묶음 받기
-                </button>
-                <button className="btn sm ghost" onClick={() => setIssueOpen(true)}>
-                  이슈 신고
-                </button>
-              </div>
+            <div className="row between">
+              <span className="small muted">
+                {status.issue_count > 0 ? `신고한 이슈 ${status.issue_count}건` : "꼬리표를 잃어버렸거나 용지를 폐기했으면 신고하세요."}
+              </span>
+              <button className="btn sm ghost" onClick={() => setIssueOpen(true)}>
+                이슈 신고
+              </button>
             </div>
           </>
         )}
@@ -795,30 +735,24 @@ export default function RosterCheck() {
                 {fmtHM(rec.opened_at)} ~ {fmtHM(rec.boundary_at)}
               </strong>
             </div>
-            <div className="row between">
-              <span className="muted">체크 인원</span>
-              <strong style={{ fontSize: 22 }}>{fmtNum(rec.net)}명</strong>
-            </div>
-            {rec.leave_net > 0 && (
-              <div className="row between">
-                <span className="muted">그중 준회원</span>
-                <span>{rec.leave_net}명</span>
-              </div>
-            )}
-            {pads.length === 0 ? (
-              <div className="alert warn small">
-                {rec.net > 0
-                  ? '등록된 묶음이 없습니다. 이 창을 닫고 "묶음 추가"로 쓰는 묶음을 등록한 뒤 다시 여세요.'
-                  : "체크가 없는 구간입니다. 그대로 저장하면 됩니다."}
-              </div>
-            ) : (
-              <ReadingInputs pads={pads} value={readings} onChange={(v) => { setReadings(v); setMismatch(null); }} />
-            )}
-            <div className="row between">
-              <span className="muted">계산된 꼬리표 수</span>
-              <strong style={{ fontSize: 22 }}>
-                {tagTotal === null ? "-" : `${fmtNum(tagTotal)}장`}
-              </strong>
+            <p style={{ margin: 0 }}>
+              이 창구에서 <strong>첫날부터 지금까지 뗀 꼬리표를 전부</strong> 세어
+              넣으세요. 다 쓴 묶음은 100장으로 셉니다.
+            </p>
+            <div className="field">
+              <label htmlFor="tag-total">꼬리표 누적 수</label>
+              <input
+                id="tag-total"
+                className="input big"
+                inputMode="numeric"
+                autoFocus
+                value={tagInput}
+                onChange={(e) => {
+                  setTagInput(e.target.value.replace(/[^0-9]/g, "").slice(0, 5));
+                  setMismatch(null);
+                }}
+                placeholder="예: 137"
+              />
             </div>
             {status && status.window_issues.length > 0 && (
               <div className="small muted">
@@ -832,7 +766,7 @@ export default function RosterCheck() {
                   className="small"
                   style={{ margin: "6px 0 0", paddingLeft: 18 }}
                 >
-                  <li>묶음의 마지막 꼬리표 번호를 다시 확인하세요.</li>
+                  <li>꼬리표를 처음부터 한 번 더 세어 보세요.</li>
                   <li>
                     체크 없이 용지를 준 학생이 있으면 아래 "누락분 추가"로 그
                     학번을 체크하세요.
@@ -850,7 +784,7 @@ export default function RosterCheck() {
             )}
             <button
               className="btn primary block"
-              disabled={busy || tagTotal === null || (pads.length === 0 && rec.net > 0)}
+              disabled={busy || tagInput === ""}
               onClick={submitTags}
             >
               대조 저장
@@ -875,29 +809,11 @@ export default function RosterCheck() {
           </div>
         )}
       </Sheet>
-      <Sheet
-        open={padMode !== null}
-        onClose={() => setPadMode(null)}
-        title={padMode === "receive" ? "묶음 받기" : "묶음 추가"}
-      >
-        {padMode && (
-          <PadForm
-            mode={padMode}
-            stationId={stationId}
-            deskId={deskArg}
-            onDone={() => {
-              setPadMode(null);
-              loadStatus();
-            }}
-          />
-        )}
-      </Sheet>
       <Sheet open={issueOpen} onClose={() => setIssueOpen(false)} title="꼬리표 이슈 신고">
         {issueOpen && (
           <IssueForm
             stationId={stationId}
             deskId={deskArg}
-            pads={pads}
             onDone={() => {
               setIssueOpen(false);
               loadStatus();
