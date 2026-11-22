@@ -52,11 +52,13 @@ export default function RosterCheck() {
   const [confirmClose, setConfirmClose] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const isAdmin = me?.role === "admin";
+  /** 투표소를 직접 고르는 계정: 총관리자와 선관위원 (FR-117) */
+  const canPick = me?.role === "admin" || me?.role === "member";
   const isStation = me?.role === "station";
-  const stationId = isAdmin ? adminStation : (rm?.station?.id ?? "");
+  const stationId = canPick ? adminStation : (rm?.station?.id ?? "");
   const operator = rm?.device?.operator_name ?? null;
   // 명부를 쓸 준비: 총관리자는 계정 서약, 투표소 기기는 담당자 서약 (FR-94)
-  const ready = isAdmin ? !!rm?.pledged_at : isStation ? !!rm?.device?.operator_pledged && !!rm?.device?.desk_id : false;
+  const ready = canPick ? !!rm?.pledged_at : isStation ? !!rm?.device?.operator_pledged && !!rm?.device?.desk_id : false;
 
   const loadMe = useCallback(async () => {
     try {
@@ -73,7 +75,7 @@ export default function RosterCheck() {
     try {
       setStatus(
         await api<StationStatus>(
-          `/roster/station?station_id=${encodeURIComponent(stationId)}${isAdmin && adminDesk ? `&desk_id=${encodeURIComponent(adminDesk)}` : ""}`,
+          `/roster/station?station_id=${encodeURIComponent(stationId)}${canPick && adminDesk ? `&desk_id=${encodeURIComponent(adminDesk)}` : ""}`,
         ),
       );
       setErr(null);
@@ -81,7 +83,7 @@ export default function RosterCheck() {
       setErr((e as Error).message);
       setStatus(null);
     }
-  }, [stationId, ready, isAdmin, adminDesk]);
+  }, [stationId, ready, canPick, adminDesk]);
 
   useEffect(() => {
     loadMe();
@@ -122,18 +124,6 @@ export default function RosterCheck() {
         <div className="alert info">선거인명부가 파기되었습니다.</div>
       </main>
     );
-  if (me?.role === "member")
-    return (
-      <main className="narrow">
-        <div className="card stack">
-          <h1>명부 확인</h1>
-          <div className="alert info">
-            선관위원 계정은 명부를 쓸 수 없습니다. 투표소 계정으로 로그인한
-            기기에서 확인하세요.
-          </div>
-        </div>
-      </main>
-    );
   const afterOperator = async () => {
     setOperatorOpen(false);
     setResult(null);
@@ -153,7 +143,7 @@ export default function RosterCheck() {
         </div>
       </main>
     );
-  if (isAdmin && !rm.pledged_at)
+  if (canPick && !rm.pledged_at)
     return (
       <main className="narrow stack">
         <Pledge onDone={loadMe} />
@@ -201,7 +191,7 @@ export default function RosterCheck() {
           body: {
             voter_id: result.voter_id,
             station_id: stationId,
-            desk_id: isAdmin ? adminDesk || undefined : undefined,
+            desk_id: canPick ? adminDesk || undefined : undefined,
             id_checked: true,
             missed_window_id: missedMode ? status?.reconciling?.id : undefined,
           },
@@ -261,7 +251,7 @@ export default function RosterCheck() {
     setErr(null);
     try {
       await api("/roster/close", {
-        body: { station_id: stationId, operator_name: operator, desk_id: isAdmin ? adminDesk || undefined : undefined },
+        body: { station_id: stationId, operator_name: operator, desk_id: canPick ? adminDesk || undefined : undefined },
       });
       await loadStatus();
       setTagInput("");
@@ -296,7 +286,7 @@ export default function RosterCheck() {
   };
 
   const rec = status?.reconciling ?? null;
-  const deskArg = isAdmin ? adminDesk || undefined : undefined;
+  const deskArg = canPick ? adminDesk || undefined : undefined;
   const now = Date.now();
 
   return (
@@ -315,9 +305,9 @@ export default function RosterCheck() {
             새로고침
           </button>
         </div>
-        {isAdmin ? (
+        {canPick ? (
           <div className="field">
-            <label htmlFor="adm-st">투표소 (총관리자)</label>
+            <label htmlFor="adm-st">투표소 ({isAdmin ? "총관리자" : "선관위원"})</label>
             <select
               id="adm-st"
               className="input"

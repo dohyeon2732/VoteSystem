@@ -176,7 +176,6 @@ export async function deskOf(ctx: Ctx, station: Station, deskId?: unknown): Prom
 
 route('GET', '/roster/desks', async (ctx) => {
   const me = requireAuth(ctx);
-  if (me.role === 'member') throw new HttpError(403, 'forbidden');
   const pl = await placesOf(ctx.db);
   const station = pl.stations.find((s) => s.id === (me.role === 'station' ? me.station_id : ctx.req.query.station_id));
   if (!station) throw new HttpError(400, 'station_required', '투표소를 선택하세요.');
@@ -188,7 +187,7 @@ route('GET', '/roster/desks', async (ctx) => {
   const now = Date.now();
   const live = devices.filter((d) => Date.parse(d.expires_at) > now);
   return {
-    desks: desks.filter((d) => !d.is_unassigned || me.role === 'admin').map((d) => ({ ...deskView(d), device_count: live.filter((x) => x.desk_id === d.id).length })),
+    desks: desks.filter((d) => !d.is_unassigned || me.role !== 'station').map((d) => ({ ...deskView(d), device_count: live.filter((x) => x.desk_id === d.id).length })),
     depts: depts.map((d) => ({ name: d.name, desk_id: desks.find((x) => parseDepts(x).includes(d.name))?.id ?? null })),
   };
 });

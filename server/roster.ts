@@ -113,10 +113,6 @@ export const placesOf = places;
 async function checkGate(ctx: Ctx, el: Election, needReady?: boolean) {
   const me = ctx.member!;
   if (el.purged_at) throw new HttpError(410, 'purged', '선거인명부가 파기되었습니다.');
-  if (me.role === 'member') {
-    await accessLog(ctx, null, 'denied', null, 'member_account');
-    throw new HttpError(403, 'member_account', '선관위원 계정은 명부를 쓸 수 없습니다. 투표소 계정으로 로그인한 기기에서 확인하세요.');
-  }
   if (me.role === 'station') {
     if (!ctx.device?.operator_name || !ctx.device.operator_pledged_at) throw new HttpError(403, 'operator_required', '담당자 이름을 입력하고 서약에 동의해야 합니다.');
     if (!ctx.device.desk_id) throw new HttpError(403, 'operator_required', '창구를 고르고 담당자를 등록해야 합니다.');
@@ -160,12 +156,22 @@ export async function gateAt(ctx: Ctx, stationId: unknown, opts: { needReady?: b
   return { me, el, station, pl };
 }
 
-/** 총관리자는 지정한 투표소, 투표소 계정은 자기 투표소. */
+/**
+ * 총관리자와 선관위원은 지정한 투표소, 투표소 계정은 자기 투표소.
+ * 선관위원(FR-117)은 비상용이라 투표소 계정처럼 운영시간 안에서만 쓸 수 있다. 총관리자는 시간 제한이 없다.
+ */
 async function resolveStation(ctx: Ctx, stationId: unknown, pl: Awaited<ReturnType<typeof places>>, el: Election, skipHours?: boolean): Promise<Station> {
   const me = ctx.member!;
-  if (me.role === 'admin') {
+  if (me.role !== 'station') {
     const station = pl.stations.find((s) => s.id === stationId);
     if (!station) throw new HttpError(400, 'station_required', '투표소를 선택하세요.');
+    if (me.role === 'member' && !skipHours) {
+      const h = stationHours(station, el, pl.days);
+      if (!h.allowed) {
+        await accessLog(ctx, station.id, 'denied', null, 'off_hours');
+        throw new HttpError(403, 'off_hours', h.message!);
+      }
+    }
     return station;
   }
   const station = pl.stations.find((s) => s.id === me.station_id);
@@ -488,8 +494,10 @@ route('POST', '/roster/issue', async (ctx) => {
 async function doCancel(ctx: Ctx, me: Member, ev: BallotEvent, reason: string) {
   if (ev.kind !== 'issue') throw new HttpError(400, 'bad_request', '불출 기록만 취소할 수 있습니다.');
   if (me.role !== 'admin') {
-    // 투표소 계정은 여러 기기가 같이 쓰므로 "본인" = 체크한 그 기기
-    if (!ctx.device || ev.device_id !== ctx.device.id) throw new HttpError(403, 'forbidden', '이 기기에서 체크한 건만 취소할 수 있습니다. 총관리자에게 요청하세요.');
+    // 투표소 계정은 여러 기기가 같이 쓰므로 "본인" = 체크한 그 기기. 선관위원은 본인 계정으로 체크한 건
+    if (me.role === 'member' ? ev.actor_id !== me.id || !!ev.device_id : !ctx.device || ev.device_id !== ctx.device.id) {
+      throw new HttpError(403, 'forbidden', me.role === 'member' ? '본인이 체크한 건만 취소할 수 있습니다. 총관리자에게 요청하세요.' : '이 기기에서 체크한 건만 취소할 수 있습니다. 총관리자에게 요청하세요.');
+    }
     if (Date.now() - Date.parse(ev.at) > OWN_CANCEL_MS) throw new HttpError(403, 'too_late', '5분이 지나 총관리자만 취소할 수 있습니다.');
   }
   const r = await ctx.db.votes.cancel({
@@ -538,7 +546,7 @@ route('GET', '/roster/station', async (ctx) => {
     ctx.db.all<TallyWindow>('tally_window', { desk_id: desk.id }, 'boundary_at desc'),
     ctx.db.all<BallotEvent>('ballot_event', { ...mine, station_id: station.id, kind: 'issue' }, 'at desc', 5),
     ctx.db.all<TagIssue>('tag_issue', { desk_id: desk.id }, 'at desc', 20),
-    me.role === 'admin' ? stationDesks(ctx.db, station.id) : Promise.resolve([] as Desk[]),
+    me.role !== 'station' ? stationDesks(ctx.db, station.id) : Promise.resolve([] as Desk[]),
   ]);
   const canceled = new Set((await ctx.db.allIn<BallotEvent>('ballot_event', 'ref_event_id', recent.map((e) => e.id))).map((c) => c.ref_event_id));
   const reconciling = wins.find((w) => w.status === 'reconciling') ?? null;
