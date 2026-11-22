@@ -77,7 +77,7 @@ export interface TallyWindow {
   desk_id?: string | null; desk_name?: string | null; tag_total?: number | null; issue_count?: number;
 }
 export interface StationStatus {
-  station: Station; hours: StationHours; open_count: number; open_leave: number;
+  station: Station; hours: StationHours; open_count: number; open_leave: number; total_count: number; total_leave: number;
   reconciling: (TallyWindow & { net: number; leave_net: number }) | null; last_window: TallyWindow | null;
   recent: { id: string; at: string; is_leave: boolean; canceled: boolean; source: string }[]; server_now: string;
   desk: DeskInfo; desks: DeskInfo[]; issue_count: number;

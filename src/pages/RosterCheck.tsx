@@ -195,7 +195,7 @@ export default function RosterCheck() {
     setBusy(true);
     setErr(null);
     try {
-      const r = await api<{ is_leave: boolean; open_count: number }>(
+      const r = await api<{ is_leave: boolean; open_count: number; total_count: number }>(
         "/roster/issue",
         {
           body: {
@@ -207,7 +207,7 @@ export default function RosterCheck() {
           },
         },
       );
-      setDone({ isLeave: r.is_leave, order: r.open_count, missed: missedMode });
+      setDone({ isLeave: r.is_leave, order: r.total_count, missed: missedMode });
       setResult(null);
       setIdChecked(false);
       await loadStatus();
@@ -416,13 +416,14 @@ export default function RosterCheck() {
                 </div>
               </div>
               <div className="right" style={{ textAlign: "right" }}>
-                <div className="small muted">이 창구의 이번 구간</div>
+                <div className="small muted">이 창구의 누적 투표</div>
                 <div style={{ fontSize: 24, fontWeight: 800 }}>
-                  {fmtNum(status.open_count)}명
+                  {fmtNum(status.total_count)}명
                 </div>
-                {status.open_leave > 0 && (
-                  <div className="small muted">준회원 {status.open_leave}</div>
-                )}
+                <div className="small muted">
+                  마지막 마감 뒤 {fmtNum(status.open_count)}명
+                  {status.total_leave > 0 ? ` · 준회원 ${status.total_leave}` : ""}
+                </div>
               </div>
             </div>
             {rec ? (
@@ -516,7 +517,7 @@ export default function RosterCheck() {
               <div className="small">
                 {done.missed
                   ? "대조 중 구간 누락분으로 추가했습니다."
-                  : `이번 구간 ${done.order}번째 불출`}
+                  : `이 창구 누적 ${done.order}번째 불출`}
               </div>
             </div>
           )}

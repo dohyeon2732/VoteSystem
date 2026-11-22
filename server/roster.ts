@@ -482,7 +482,7 @@ route('POST', '/roster/issue', async (ctx) => {
     ctx.db.votes.liveCounts(),
   ]);
   const live = counts.find((x) => x.desk_id === desk.id);
-  return { ok: true, event_id: eventId, is_leave: r.is_leave, open_count: Number(live?.open_net ?? 0) };
+  return { ok: true, event_id: eventId, is_leave: r.is_leave, open_count: Number(live?.open_net ?? 0), total_count: Number(live?.net ?? 0) };
 });
 
 async function doCancel(ctx: Ctx, me: Member, ev: BallotEvent, reason: string) {
@@ -546,6 +546,8 @@ route('GET', '/roster/station', async (ctx) => {
   return {
     station, hours: stationHours(station, el, pl.days), desk: deskView(desk), desks: desks.map(deskView),
     open_count: Number(l?.open_net ?? 0), open_leave: Number(l?.open_leave_net ?? 0),
+    // 이 창구에서 첫날부터 지금까지 불출한 인원 (취소 제외). 꼬리표 누적 수와 맞아야 하는 숫자
+    total_count: Number(l?.net ?? 0), total_leave: Number(l?.leave_net ?? 0),
     reconciling: reconciling ? { ...reconciling, ...(await ctx.db.votes.windowCounts(reconciling.id)) } : null,
     last_window: wins.find((w) => w.status !== 'reconciling') ?? null,
     issue_count: issues.filter((i) => !i.voided_at).length,
