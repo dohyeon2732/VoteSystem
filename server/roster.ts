@@ -595,6 +595,18 @@ route('GET', '/roster/station', async (ctx) => {
   };
 });
 
+/** 이 기기(투표소 계정) 또는 본인(위원)이 그 투표소에서 한 체크 전부, 최신순 (FR-123). 화면을 열 때 한 번 읽는다. */
+route('GET', '/roster/recent', async (ctx) => {
+  const { me, station } = await gateAt(ctx, ctx.req.query.station_id, { skipHours: true });
+  const mine: Record<string, string> = ctx.device ? { device_id: ctx.device.id } : { actor_id: me.id };
+  const [issues, cancels] = await Promise.all([
+    ctx.db.all<BallotEvent>('ballot_event', { ...mine, station_id: station.id, kind: 'issue' }, 'at desc'),
+    ctx.db.all<BallotEvent>('ballot_event', { station_id: station.id, kind: 'cancel' }),
+  ]);
+  const canceled = new Set(cancels.map((c) => c.ref_event_id));
+  return { recent: issues.map((e) => ({ id: e.id, at: e.at, is_leave: e.is_leave, canceled: canceled.has(e.id), source: e.source })) };
+});
+
 route('POST', '/roster/close', async (ctx) => {
   const { me, station } = await gateAt(ctx, ctx.req.body?.station_id, { needReady: true });
   const desk = await deskOf(ctx, station, ctx.req.body?.desk_id);

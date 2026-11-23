@@ -15,7 +15,7 @@ const TOUCH_EVERY_MS = 60_000; // 마지막 활동 시각은 1분에 한 번만 
 export const STATION_PATHS: { method: string; re: RegExp }[] = [
   ['POST', '/login'], ['POST', '/logout'], ['GET', '/me'], ['GET', '/config'],
   ['GET', '/roster/me'], ['POST', '/roster/operator'], ['POST', '/roster/lookup'], ['POST', '/roster/issue'],
-  ['POST', '/roster/cancel'], ['GET', '/roster/station'], ['POST', '/roster/close'], ['POST', '/roster/close/[^/]+/submit'],
+  ['POST', '/roster/cancel'], ['GET', '/roster/station'], ['GET', '/roster/recent'], ['POST', '/roster/close'], ['POST', '/roster/close/[^/]+/submit'],
   ['GET', '/roster/windows'],
   // v1.4 창구·묶음·이슈
   ['GET', '/roster/desks'], ['POST', '/roster/pads'], ['POST', '/roster/pads/receive'], ['DELETE', '/roster/pads/[^/]+'],

@@ -35,6 +35,9 @@ export default function RosterCheck() {
   const [status, setStatus] = useState<StationStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [sid, setSid] = useState("");
+  // 이 화면에서 체크한 학번 (FR-122). 서버에 보내거나 저장하지 않고, 새로고침하면 사라진다
+  const [history, setHistory] = useState<StationStatus["recent"]>([]);
+  const [checkedSids, setCheckedSids] = useState<Record<string, string>>({});
   const [result, setResult] = useState<(LookupResult & { sid: string }) | null>(
     null,
   );
@@ -91,6 +94,26 @@ export default function RosterCheck() {
   useEffect(() => {
     loadStatus();
   }, [loadStatus]);
+  // 지난 체크 전부 (FR-123): 화면을 열 때와 취소 뒤에만 읽고, 그 사이 새 체크는 상태 응답의 최근 5건으로 채운다
+  const loadHistory = useCallback(async () => {
+    if (!stationId || !ready) return setHistory([]);
+    try {
+      setHistory((await api<{ recent: StationStatus["recent"] }>(`/roster/recent?station_id=${encodeURIComponent(stationId)}`)).recent);
+    } catch {
+      /* 못 읽으면 최근 5건만 보인다 */
+    }
+  }, [stationId, ready]);
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+  useEffect(() => {
+    const fresh = status?.recent ?? [];
+    if (fresh.length === 0) return;
+    setHistory((old) => {
+      const ids = new Set(fresh.map((e) => e.id));
+      return [...fresh, ...old.filter((e) => !ids.has(e.id))].sort((a, b) => b.at.localeCompare(a.at));
+    });
+  }, [status]);
   // 조회 결과는 30초 뒤 지운다 (15.3)
   useEffect(() => {
     if (!result) return;
@@ -185,7 +208,7 @@ export default function RosterCheck() {
     setBusy(true);
     setErr(null);
     try {
-      const r = await api<{ is_leave: boolean; open_count: number; total_count: number }>(
+      const r = await api<{ event_id: string; is_leave: boolean; open_count: number; total_count: number }>(
         "/roster/issue",
         {
           body: {
@@ -197,6 +220,8 @@ export default function RosterCheck() {
           },
         },
       );
+      const checkedSid = result.sid;
+      setCheckedSids((m) => ({ ...m, [r.event_id]: checkedSid }));
       setDone({ isLeave: r.is_leave, order: r.total_count, missed: missedMode });
       setResult(null);
       setIdChecked(false);
@@ -224,7 +249,7 @@ export default function RosterCheck() {
     setErr(null);
     try {
       await api("/roster/cancel", { body: { event_id: id, reason } });
-      await loadStatus();
+      await Promise.all([loadStatus(), loadHistory()]);
     } catch (e2) {
       setErr((e2 as Error).message);
     } finally {
@@ -611,13 +636,14 @@ export default function RosterCheck() {
       )}
 
       {/* 최근 내 체크 */}
-      {status && status.recent.length > 0 && (
+      {status && history.length > 0 && (
         <div className="card">
           <h2 style={{ marginBottom: 8 }}>
-            {isStation ? "이 기기의 최근 체크" : "최근 내 체크"}
+            {isStation ? "이 기기의 체크 기록" : "내 체크 기록"}{" "}
+            <span className="small muted">{history.length}건</span>
           </h2>
-          <div className="list">
-            {status.recent.map((e) => {
+          <div className="list" style={{ maxHeight: 420, overflowY: "auto" }}>
+            {history.map((e) => {
               const canCancel =
                 !e.canceled &&
                 (isAdmin || now - Date.parse(e.at) < OWN_CANCEL_MS);
@@ -625,6 +651,7 @@ export default function RosterCheck() {
                 <div key={e.id} className="list-item">
                   <div>
                     <div className="title">
+                      {checkedSids[e.id] && <span className="mono">{checkedSids[e.id]} · </span>}
                       {fmtHM(e.at)} {e.is_leave ? "· 준회원" : ""}
                       {e.source === "missed" ? " · 누락분" : ""}
                     </div>
