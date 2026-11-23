@@ -265,7 +265,7 @@ export default function RosterCheck() {
     }
     if (
       window.confirm(
-        "지금 시각으로 꼬리표를 마감할까요? 이후 체크는 다음 구간으로 들어갑니다.",
+        "꼬리표를 마감할까요? 꼬리표 수를 넣고 대조 저장을 누를 때까지의 체크와 비교합니다.",
       )
     )
       beginClose();
@@ -444,7 +444,7 @@ export default function RosterCheck() {
             {rec ? (
               <div className="alert warn row between" style={{ gap: 8 }}>
                 <span>
-                  대조 중 · {fmtHM(rec.boundary_at)} 마감분
+                  꼬리표 대조 중 · 수를 입력해 끝내세요
                 </span>
                 <button
                   className="btn sm primary"
@@ -719,7 +719,7 @@ export default function RosterCheck() {
             지금 담당자가 <strong>{operator}</strong> 맞나요?
           </p>
           <p className="muted small" style={{ margin: 0 }}>
-            지금 시각으로 마감하면 이후 체크는 다음 구간으로 들어갑니다.
+            꼬리표 수를 넣고 대조 저장을 누를 때까지의 체크와 비교합니다.
           </p>
           <button
             className="btn primary block"
@@ -750,12 +750,16 @@ export default function RosterCheck() {
             <div className="row between">
               <span className="muted">구간</span>
               <strong>
-                {fmtHM(rec.opened_at)} ~ {fmtHM(rec.boundary_at)}
+                {fmtHM(rec.opened_at)} ~ 대조 저장할 때
               </strong>
             </div>
             <p style={{ margin: 0 }}>
               이 창구에서 <strong>첫날부터 지금까지 뗀 꼬리표를 전부</strong> 세어
               넣으세요. 다 쓴 묶음은 100장으로 셉니다.
+            </p>
+            <p className="small muted" style={{ margin: 0 }}>
+              대조 저장을 누르는 순간까지 체크한 인원과 비교합니다. 세는 동안에는
+              용지를 주지 마세요.
             </p>
             <div className="field">
               <label htmlFor="tag-total">꼬리표 누적 수</label>

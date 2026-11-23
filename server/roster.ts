@@ -653,6 +653,18 @@ route('POST', '/roster/close/:id/submit', async (ctx) => {
   const { me } = await rosterGate(ctx);
   const w = await loadReconciling(ctx, me, ctx.params.id);
   const total = int(ctx.req.body?.total, '꼬리표 누적 수');
+  // FR-124: 비교 기준은 마감을 누른 때가 아니라 대조 저장을 누른 지금이다.
+  // 마감 뒤에 들어온 체크가 있으면 구간 끝을 지금으로 옮겨 이번 구간에 넣는다 (없으면 마감 시각을 그대로 둔다)
+  if (w.desk_id) {
+    const open = await ctx.db.all<BallotEvent>('ballot_event', { desk_id: w.desk_id, window_id: null }, 'at', 1);
+    if (open.length) {
+      const boundary = nowIso();
+      await ctx.db.votes.assignWindow(w.desk_id, w.id, boundary);
+      await ctx.db.update('tally_window', { id: w.id }, { boundary_at: boundary });
+      await accessLog(ctx, w.station_id, 'close', null, 'extend', `경계 ${hm(Date.parse(w.boundary_at))} → ${hm(Date.parse(boundary))}`);
+      w.boundary_at = boundary;
+    }
+  }
   const [c, prev] = await Promise.all([ctx.db.votes.windowCounts(w.id), w.desk_id ? tagBaseline(ctx.db, w.desk_id) : Promise.resolve(0)]);
   const tags = total - prev;
   const pad_json = JSON.stringify({ total, prev });
