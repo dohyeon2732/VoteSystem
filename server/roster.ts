@@ -1009,6 +1009,41 @@ route('POST', '/roster/sheet/apply', async (ctx) => {
   return { applied, failed, unassigned };
 });
 
+// ---------- 학번 일괄 대조 (FR-120) ----------
+/** 손으로 적어 둔 학번 목록을 넣으면 학번마다 체크 여부를 알려 준다. 읽기만 한다. */
+route('POST', '/roster/check-sids', async (ctx) => {
+  requireAdmin(ctx);
+  const raw: unknown[] = Array.isArray(ctx.req.body?.sids) ? ctx.req.body.sids : [];
+  if (raw.length === 0) throw new HttpError(400, 'bad_request', '학번을 넣으세요.');
+  if (raw.length > 500) throw new HttpError(400, 'bad_request', '한 번에 500개까지 대조할 수 있습니다.');
+  const pl = await places(ctx.db);
+  const seen = new Set<string>();
+  const rows: Record<string, unknown>[] = [];
+  const todo: { sid: string; row: Record<string, unknown> }[] = [];
+  for (const x of raw) {
+    const sid = normalizeSid(x);
+    const row: Record<string, unknown> = { sid };
+    rows.push(row);
+    if (sid.length < 4 || sid.length > 20) row.result = 'bad';
+    else if (seen.has(sid)) row.result = 'duplicate';
+    else { seen.add(sid); todo.push({ sid, row }); }
+  }
+  for (let i = 0; i < todo.length; i += 25) {
+    await Promise.all(todo.slice(i, i + 25).map(async ({ sid, row }) => {
+      const v = await ctx.db.get<Voter>('voter', { sid_hash: hashSid(sid), batch_id: null });
+      if (!v) { row.result = 'not_found'; return; }
+      const { name, dept, kind } = voterView(v);
+      Object.assign(row, {
+        result: v.voted_at ? 'voted' : 'not_voted', name, dept, kind, voted_at: v.voted_at,
+        voted_station_name: v.voted_at ? pl.stations.find((s) => s.id === v.voted_station_id)?.name ?? '' : '',
+      });
+    }));
+  }
+  const n = (r: string) => rows.filter((x) => x.result === r).length;
+  await accessLog(ctx, null, 'check_sids', null, 'ok', `${rows.length}건 · 미체크 ${n('not_voted')} · 체크됨 ${n('voted')} · 명부에 없음 ${n('not_found')}`);
+  return { status: 200, body: { rows }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
+});
+
 // ---------- 보유기간·파기 (FR-99) ----------
 route('PUT', '/roster/retention', async (ctx) => {
   const me = requireAdmin(ctx);

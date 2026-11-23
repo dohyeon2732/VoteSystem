@@ -179,6 +179,65 @@ const SURNAMES = '김이박최정강조윤장임한오서신권황안송류전�
 const GIVEN = '민서지현준우도윤하은수진예린시아건영호성재희유연채원승혜정태경나리선미주아인혁찬규';
 
 /** 리허설용 가짜 명부 23,000명 (FR-84). 학번은 99로 시작 */
+type SidRow = { sid: string; result: 'voted' | 'not_voted' | 'not_found' | 'bad' | 'duplicate'; name?: string; dept?: string; voted_at?: string | null; voted_station_name?: string };
+const SID_RESULT: Record<SidRow['result'], string> = { not_voted: '체크 안 됨', voted: '체크됨', not_found: '명부에 없음', bad: '학번 형식 오류', duplicate: '목록에 중복' };
+const SID_ORDER: SidRow['result'][] = ['not_voted', 'not_found', 'bad', 'duplicate', 'voted'];
+
+/** 학번 일괄 대조 (FR-120): 학과 명부 등에 손으로 적은 학번을 붙여 넣어 체크가 빠진 학번을 찾는다. */
+function SidCheck() {
+  const [text, setText] = useState('');
+  const [rows, setRows] = useState<SidRow[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const sids = text.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+  const check = async () => {
+    setBusy(true); setErr('');
+    try {
+      const out: SidRow[] = [];
+      for (let i = 0; i < sids.length; i += 500) out.push(...(await api<{ rows: SidRow[] }>('/roster/check-sids', { body: { sids: sids.slice(i, i + 500) } })).rows);
+      setRows(out.sort((a, b) => SID_ORDER.indexOf(a.result) - SID_ORDER.indexOf(b.result)));
+    } catch (e) { setErr(e instanceof Error ? e.message : '대조하지 못했습니다.'); }
+    finally { setBusy(false); }
+  };
+  const count = (r: SidRow['result']) => rows?.filter((x) => x.result === r).length ?? 0;
+  return (
+    <div className="card stack">
+      <h1>학번 일괄 대조</h1>
+      <p className="muted small">종이 명부 등에 적어 둔 학번을 붙여 넣으면 학번마다 시스템에 체크되어 있는지 알려 줍니다. 줄바꿈, 띄어쓰기, 쉼표로 구분합니다. 기록은 바꾸지 않고, 대조한 사실은 접근 로그에 남습니다.</p>
+      <textarea id="sid-check" aria-label="대조할 학번 목록" className="input" rows={6} placeholder={'202012345\n202112346\n…'} value={text} onChange={(e) => { setText(e.target.value); setRows(null); }} />
+      <div className="row between">
+        <span className="muted small">{fmtNum(sids.length)}개</span>
+        <button className="btn primary" disabled={busy || sids.length === 0} onClick={check}>{busy ? '대조하는 중…' : '대조'}</button>
+      </div>
+      {err && <div className="alert danger small">{err}</div>}
+      {rows && (
+        <>
+          <div className={`alert ${count('not_voted') + count('not_found') > 0 ? 'warn' : 'good'} small`}>
+            체크 안 됨 {count('not_voted')}명 · 명부에 없음 {count('not_found')}건 · 체크됨 {count('voted')}명
+            {count('bad') + count('duplicate') > 0 ? ` · 형식 오류 ${count('bad')}건 · 중복 ${count('duplicate')}건` : ''}
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table>
+              <thead><tr><th>학번</th><th>결과</th><th>이름</th><th>학과</th><th>체크 시각 · 투표소</th></tr></thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i}>
+                    <td className="mono">{r.sid}</td>
+                    <td><span className={`pill ${r.result === 'voted' ? 'good' : r.result === 'not_voted' ? 'danger' : 'warn'}`}>{SID_RESULT[r.result]}</span></td>
+                    <td>{r.name ?? ''}</td>
+                    <td>{r.dept ?? ''}</td>
+                    <td className="small">{r.voted_at ? `${fmtTime(r.voted_at)} · ${r.voted_station_name}` : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function fakeRows(districts: District[]) {
   const SAMPLE: Record<string, number> = { '건축대학': 373, '경영대학': 1412, '공과대학': 4750, '국제대학': 361, '문과대학': 1550, '부동산과학원': 420, '사범대학': 880, '사회과학대학': 1420, '상허교양대학': 1200, '생명과학대학': 1120, '수의과대학': 460, '예술디자인대학': 990, '융합과학기술원': 1180, '이과대학': 405 };
   const total = districts.reduce((a, d) => a + (SAMPLE[d.name] ?? 500), 0);
@@ -373,6 +432,8 @@ export default function AdminRoster() {
           <button className="btn" disabled={busy || !cancelSid.sid || !cancelSid.reason} onClick={() => run(() => api('/roster/cancel-by-sid', { body: cancelSid }).then(() => setCancelSid({ sid: '', reason: '' })), '체크를 취소했습니다.')}>취소</button>
         </div>
       </div>
+
+      <SidCheck />
 
       <div className="grid cols-2">
         <div className="card stack">
