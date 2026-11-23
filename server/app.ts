@@ -82,7 +82,7 @@ route('GET', '/tally', async (ctx) => {
   const entries = await ctx.db.all<Entry>('entry');
   const points = computeTally({ ...cfg, entries, extensionEnabled: cfg.election.extension_enabled });
   const pending = ctx.member!.role === 'admin' ? (await ctx.db.all<ChangeRequest>('change_request', { status: 'pending' })).length : 0;
-  const roster = await tallyExtras(ctx.db, cfg.days, cfg.stations, cfg.election.extension_enabled);
+  const roster = await tallyExtras(ctx.db, cfg.days, cfg.stations, cfg.election.extension_enabled, points.map((p) => ({ date: p.date, time: p.time, epoch: p.epoch })));
   // 미확인 꼬리표 이슈 수 (FR-105). v1.4 테이블이 아직 없으면 0
   const openIssues = ctx.member!.role === 'admin' ? await ctx.db.count('tag_issue', { reviewed_at: null, voided_at: null }).catch(() => 0) : 0;
   return { election: cfg.election, points, pending_requests: pending, open_issues: openIssues, roster, server_now: nowIso() };

@@ -318,14 +318,20 @@ const sumLive = (rows: StationCounts[]) => ({
 });
 
 /** 현황판에 붙이는 실시간·대조 정보 (15.6). v1.4: 투표소 값은 창구 합, 창구별 내역을 함께 준다. */
-export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station[], extensionEnabled: boolean) {
+export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station[], extensionEnabled: boolean, points: { date: string; time: string; epoch: number }[] = []) {
   const active = await rosterActive(db);
-  if (!active) return { roster_active: false, stations: [] };
+  if (!active) return { roster_active: false, stations: [], live_series: [] };
   const [live, wins, desks] = await Promise.all([db.votes.liveCounts(), db.all<TallyWindow>('tally_window'), allDesks(db)]);
   const dates = new Set(days.filter((d) => !d.is_extension || extensionEnabled).map((d) => d.date));
   const now = Date.now();
+  // 실시간 추이 (FR-118): 지난 시점마다 그때까지 마감된 구간의 체크 인원 합. 대조가 끝났는지는 따지지 않는다
+  const live_series = points.filter((p) => p.epoch <= now).map((p) => {
+    const upto = new Date(p.epoch + SLOT_MATCH_MS).toISOString();
+    const closed = wins.filter((w) => w.boundary_at <= upto);
+    return { date: p.date, time: p.time, cumulative: closed.reduce((a, w) => a + w.check_count, 0), leave_cumulative: closed.reduce((a, w) => a + w.leave_count, 0) };
+  });
   return {
-    roster_active: true,
+    roster_active: true, live_series,
     stations: stations.map((st) => {
       const l = sumLive(live.filter((x) => x.station_id === st.id));
       const mine = wins.filter((w) => w.station_id === st.id);

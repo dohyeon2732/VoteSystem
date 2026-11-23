@@ -54,7 +54,7 @@ export interface RosterStation {
 }
 export interface Tally {
   election: Election; points: TallyPoint[]; pending_requests: number; server_now: string;
-  roster: { roster_active: boolean; stations: RosterStation[] };
+  roster: { roster_active: boolean; stations: RosterStation[]; live_series?: { date: string; time: string; cumulative: number; leave_cumulative: number }[] };
 }
 
 // ---- 선거인명부 (v1.1) ----
