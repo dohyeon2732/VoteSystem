@@ -36,6 +36,7 @@ export interface CancelInput {
   operator_name: string | null; device_id: string | null;
 }
 export interface StationCounts { station_id: string; desk_id: string | null; net: number; leave_net: number; open_net: number; open_leave_net: number }
+export interface HourCount { hour: string; net: number; leave_net: number }
 export interface RosterCount { district_id: string; kind: VoterKind; total: number; voted: number }
 
 export interface VoteOps {
@@ -49,6 +50,8 @@ export interface VoteOps {
   windowCounts(windowId: string): Promise<{ net: number; leave_net: number }>;
   /** 투표소 × 창구별 실시간 집계. */
   liveCounts(): Promise<StationCounts[]>;
+  /** 시간대(UTC 시 단위, 'YYYY-MM-DDTHH')별 순 체크 인원. DB 함수가 아직 없으면 null. */
+  hourlyCounts(): Promise<HourCount[] | null>;
   /** 선거구 × 종류별 명부 인원과 투표 인원. */
   rosterCounts(): Promise<RosterCount[]>;
   /** 체크 기록·마감을 모두 지우고 투표 상태를 해제 (리허설용). */

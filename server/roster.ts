@@ -321,15 +321,32 @@ const sumLive = (rows: StationCounts[]) => ({
 export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station[], extensionEnabled: boolean, points: { date: string; time: string; epoch: number }[] = []) {
   const active = await rosterActive(db);
   if (!active) return { roster_active: false, stations: [], live_series: [] };
-  const [live, wins, desks] = await Promise.all([db.votes.liveCounts(), db.all<TallyWindow>('tally_window'), allDesks(db)]);
+  const [live, wins, desks, hourly] = await Promise.all([db.votes.liveCounts(), db.all<TallyWindow>('tally_window'), allDesks(db), db.votes.hourlyCounts()]);
   const dates = new Set(days.filter((d) => !d.is_extension || extensionEnabled).map((d) => d.date));
   const now = Date.now();
-  // 실시간 추이 (FR-118): 지난 시점마다 그때까지 마감된 구간의 체크 인원 합. 대조가 끝났는지는 따지지 않는다
-  const live_series = points.filter((p) => p.epoch <= now).map((p) => {
-    const upto = new Date(p.epoch + SLOT_MATCH_MS).toISOString();
-    const closed = wins.filter((w) => w.boundary_at <= upto);
-    return { date: p.date, time: p.time, cumulative: closed.reduce((a, w) => a + w.check_count, 0), leave_cumulative: closed.reduce((a, w) => a + w.leave_count, 0) };
-  });
+  // 실시간 추이 (FR-119): 투표일마다 매 정각과 그날 마지막 종료 시각에, 그때까지의 순 체크 인원(체크 시각 기준)
+  let live_series: { date: string; time: string; cumulative: number; leave_cumulative: number }[];
+  if (hourly) {
+    const buckets = hourly.map((h) => ({ start: Date.parse(`${h.hour}:00:00Z`), net: Number(h.net), leave: Number(h.leave_net) }));
+    const mins = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+    const open = Math.min(...stations.map((s) => mins(s.open_time))), close = Math.max(...stations.map((s) => mins(s.close_time)));
+    const times: string[] = [];
+    for (let m = (Math.floor(open / 60) + 1) * 60; m < close; m += 60) times.push(`${String(m / 60).padStart(2, '0')}:00`);
+    if (stations.length) times.push(`${String(Math.floor(close / 60)).padStart(2, '0')}:${String(close % 60).padStart(2, '0')}`);
+    live_series = [...dates].sort().flatMap((date) => times.map((time) => ({ date, time, epoch: slotEpoch(date, time) })))
+      .filter((p) => p.epoch <= now)
+      .map((p) => {
+        const past = buckets.filter((b) => b.start < p.epoch);
+        return { date: p.date, time: p.time, cumulative: past.reduce((a, b) => a + b.net, 0), leave_cumulative: past.reduce((a, b) => a + b.leave, 0) };
+      });
+  } else {
+    // DB 함수가 없을 때: 지난 집계 시점마다 그때까지 마감된 구간의 체크 인원 합 (FR-118)
+    live_series = points.filter((p) => p.epoch <= now).map((p) => {
+      const upto = new Date(p.epoch + SLOT_MATCH_MS).toISOString();
+      const closed = wins.filter((w) => w.boundary_at <= upto);
+      return { date: p.date, time: p.time, cumulative: closed.reduce((a, w) => a + w.check_count, 0), leave_cumulative: closed.reduce((a, w) => a + w.leave_count, 0) };
+    });
+  }
   return {
     roster_active: true, live_series,
     stations: stations.map((st) => {

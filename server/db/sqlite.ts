@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Db, StationCounts, RosterCount, VoteOps, Where } from './types.js';
+import type { Db, HourCount, StationCounts, RosterCount, VoteOps, Where } from './types.js';
 import { BOOL_COLUMNS } from './types.js';
 
 const SCHEMA = `
@@ -168,6 +168,10 @@ export function createSqliteDb(path: string): Db {
         SUM(CASE WHEN window_id IS NULL THEN ${NET} ELSE 0 END) AS open_net,
         SUM(CASE WHEN window_id IS NULL AND is_leave = 1 THEN ${NET} ELSE 0 END) AS open_leave_net
         FROM ballot_event GROUP BY station_id, desk_id`).all() as unknown as StationCounts[];
+    },
+    async hourlyCounts() {
+      return db.prepare(`SELECT substr(at, 1, 13) AS hour, SUM(${NET}) AS net, SUM(CASE WHEN is_leave = 1 THEN ${NET} ELSE 0 END) AS leave_net
+        FROM ballot_event GROUP BY substr(at, 1, 13)`).all() as unknown as HourCount[];
     },
     async rosterCounts() {
       return db.prepare(`SELECT district_id, kind, COUNT(*) AS total, COUNT(voted_at) AS voted FROM voter WHERE batch_id IS NULL GROUP BY district_id, kind`).all() as unknown as RosterCount[];

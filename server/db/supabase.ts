@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import type { Db, RosterCount, StationCounts, VoteOps, Where } from './types.js';
+import type { Db, HourCount, RosterCount, StationCounts, VoteOps, Where } from './types.js';
 
 const PAGE = 1000; // PostgREST 기본 최대 행 수
 
@@ -30,6 +30,8 @@ export function createSupabaseDb(url: string, serviceKey: string): Db {
     },
     windowCounts: (windowId) => rpc('vote_window_counts', { p_window: windowId }),
     liveCounts: () => rpc<StationCounts[]>('vote_live_counts'),
+    // schema.sql을 다시 실행하기 전에는 함수가 없다. 그때는 null을 돌려 예전 추이로 대신한다
+    hourlyCounts: () => rpc<HourCount[]>('vote_hourly_counts').catch(() => null),
     rosterCounts: () => rpc<RosterCount[]>('vote_roster_counts'),
     async resetChecks() { await rpc('vote_reset_checks'); },
     rebuildVoterState: () => rpc<number>('vote_rebuild_voter_state'),

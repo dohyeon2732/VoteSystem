@@ -224,6 +224,15 @@ create or replace function vote_live_counts() returns jsonb language sql stable 
     from ballot_event group by station_id, desk_id) t
 $$;
 
+-- 현황판 시간별 추이 (FR-119): 체크 시각의 시 단위(UTC)별 순 체크 인원
+create or replace function vote_hourly_counts() returns jsonb language sql stable as $$
+  select coalesce(jsonb_agg(t), '[]'::jsonb) from (
+    select substr(at, 1, 13) as hour,
+      sum(case when kind = 'issue' then 1 else -1 end)::int as net,
+      sum(case when is_leave then (case when kind = 'issue' then 1 else -1 end) else 0 end)::int as leave_net
+    from ballot_event group by substr(at, 1, 13)) t
+$$;
+
 create or replace function vote_roster_counts() returns jsonb language sql stable as $$
   select coalesce(jsonb_agg(t), '[]'::jsonb) from (
     select district_id, kind, count(*)::int as total, count(voted_at)::int as voted

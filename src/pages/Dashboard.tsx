@@ -69,7 +69,7 @@ export default function Dashboard() {
     ? [
         ...(roster?.live_series ?? []).map((p) => ({ label: pointLabel(p), pct: pctOf(p.cumulative, baseVoters + p.leave_cumulative), cumulative: p.cumulative })),
         { label: '지금', pct: liveT.pct, cumulative: liveT.cumulative },
-      ]
+      ].filter((p, i, a) => i < a.length - 1 || a.length === 1 || p.cumulative !== a[i - 1].cumulative)
     : tally.points.map((p) => ({ label: pointLabel(p), pct: p.total.pct, cumulative: p.total.cumulative }));
   const spring = { type: 'spring', bounce: 0, duration: 0.5 } as const;
   const missLabel = roster ? '대조 미완료' : '미입력';
@@ -150,14 +150,14 @@ export default function Dashboard() {
         </div>
 
         <div className="card">
-          <h2 style={{ marginBottom: 8 }}>{live ? '전체 투표율 추이 (실시간)' : '시점별 전체 투표율 추이'}</h2>
+          <h2 style={{ marginBottom: 8 }}>{live ? '시간별 전체 투표율 추이 (실시간)' : '시점별 전체 투표율 추이'}</h2>
           <div style={{ width: '100%', height: 220 }}>
             <ResponsiveContainer>
               <LineChart data={series} margin={{ top: 8, right: 12, left: -16, bottom: 0 }}>
                 <CartesianGrid stroke="var(--border)" vertical={false} />
                 <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--muted)' }} interval="preserveStartEnd" minTickGap={24} />
                 <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: 'var(--muted)' }} unit="%" />
-                <Tooltip formatter={(v: number) => [fmtPct(v), '전체 투표율']} contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)' }} />
+                <Tooltip formatter={(v: number, _n: string, item: { payload?: { cumulative?: number } }) => [`${fmtPct(v)} (${fmtNum(item.payload?.cumulative ?? 0)}명)`, '전체 투표율']} contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)' }} />
                 <ReferenceLine y={th} stroke="var(--danger)" strokeDasharray="4 4" />
                 <Line type="monotone" dataKey="pct" stroke="var(--accent)" strokeWidth={2.5} dot={{ r: 2 }} isAnimationActive={!reduce} />
               </LineChart>
