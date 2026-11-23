@@ -139,23 +139,30 @@ export function createSqliteDb(path: string): Db {
         const e = one(`SELECT * FROM ballot_event WHERE id = ? AND kind = 'issue'`, c.issue_id);
         if (!e) return { ok: false as const, reason: 'not_found' };
         if (one('SELECT 1 AS x FROM ballot_event WHERE ref_event_id = ?', e.id)) return { ok: false as const, reason: 'already_canceled' };
+        let late = false;
+        const openDesk = c.open_desk_id ?? e.desk_id ?? null;
         if (e.window_id) {
           const w = one('SELECT status FROM tally_window WHERE id = ?', e.window_id);
-          if (w?.status !== 'reconciling') return { ok: false as const, reason: 'window_closed' };
+          if (w?.status !== 'reconciling') {
+            if (!c.force || !openDesk) return { ok: false as const, reason: 'window_closed' };
+            late = true;
+          }
         }
         run(`INSERT INTO ballot_event (id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason, operator_name, device_id, desk_id)
              VALUES (?, ?, ?, ?, 'cancel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          c.cancel_id, e.voter_id, e.voter_sid_hash, e.station_id, e.id, e.is_leave, c.at, c.actor_id, c.actor_name, e.window_id, e.source, c.reason,
-          c.operator_name ?? null, c.device_id ?? null, e.desk_id ?? null);
+          c.cancel_id, e.voter_id, e.voter_sid_hash, e.station_id, e.id, e.is_leave, c.at, c.actor_id, c.actor_name, late ? null : e.window_id, e.source, c.reason,
+          c.operator_name ?? null, c.device_id ?? null, late ? openDesk : e.desk_id ?? null);
         run('UPDATE voter SET voted_at = NULL, voted_station_id = NULL, voted_event_id = NULL WHERE sid_hash = ? AND voted_event_id = ?', e.voter_sid_hash, e.id);
-        return { ok: true as const };
+        return { ok: true as const, late };
       });
     },
     async assignWindow(deskId, windowId, boundaryAt) {
       tx(() => {
         run(`UPDATE ballot_event SET window_id = ? WHERE desk_id = ? AND window_id IS NULL AND kind = 'issue' AND at <= ?`, windowId, deskId, boundaryAt);
         run(`UPDATE ballot_event SET window_id = ? WHERE desk_id = ? AND window_id IS NULL AND kind = 'cancel'
-             AND ref_event_id IN (SELECT id FROM ballot_event WHERE window_id = ?)`, windowId, deskId, windowId);
+             AND (ref_event_id IN (SELECT id FROM ballot_event WHERE window_id = ?)
+               OR (at <= ? AND EXISTS (SELECT 1 FROM ballot_event i WHERE i.id = ballot_event.ref_event_id AND i.window_id IS NOT NULL AND i.window_id <> ?)))`,
+          windowId, deskId, windowId, boundaryAt, windowId);
       });
     },
     async windowCounts(windowId) {

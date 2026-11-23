@@ -425,11 +425,11 @@ export default function AdminRoster() {
 
       <div className="card stack">
         <h1>체크 취소 (총관리자)</h1>
-        <p className="muted small">5분이 지난 체크나 다른 위원의 체크를 취소합니다. 대조가 끝나지 않은 구간의 체크만 취소할 수 있고, 대조가 끝난 구간은 대조 현황에서 조정으로 처리합니다.</p>
+        <p className="muted small">5분이 지난 체크나 다른 위원의 체크를 취소합니다. 대조가 끝난 구간의 체크도 취소할 수 있습니다. 그때는 끝난 구간의 숫자와 나간 공지는 그대로 두고, 취소분이 그 창구의 다음 마감에서 빠집니다(체크 인원이 1명 적게 나옴). 학번을 잘못 체크한 것이면 맞는 학번을 누락분 추가로 체크하세요.</p>
         <div className="form-row">
           <input className="input" inputMode="numeric" placeholder="학번" value={cancelSid.sid} onChange={(e) => setCancelSid({ ...cancelSid, sid: e.target.value })} />
           <input className="input wide" placeholder="사유" value={cancelSid.reason} onChange={(e) => setCancelSid({ ...cancelSid, reason: e.target.value })} />
-          <button className="btn" disabled={busy || !cancelSid.sid || !cancelSid.reason} onClick={() => run(() => api('/roster/cancel-by-sid', { body: cancelSid }).then(() => setCancelSid({ sid: '', reason: '' })), '체크를 취소했습니다.')}>취소</button>
+          <button className="btn" disabled={busy || !cancelSid.sid || !cancelSid.reason} onClick={() => run(async () => { const r = await api<{ late?: boolean }>('/roster/cancel-by-sid', { body: cancelSid }); setCancelSid({ sid: '', reason: '' }); setMsg({ text: r.late ? '체크를 취소했습니다. 대조가 끝난 구간의 체크라서 그 창구의 다음 마감 때 체크 인원이 1명 적게 나옵니다.' : '체크를 취소했습니다.', ok: true }); })}>취소</button>
         </div>
       </div>
 

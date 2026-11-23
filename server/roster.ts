@@ -523,16 +523,23 @@ async function doCancel(ctx: Ctx, me: Member, ev: BallotEvent, reason: string) {
     }
     if (Date.now() - Date.parse(ev.at) > OWN_CANCEL_MS) throw new HttpError(403, 'too_late', '5분이 지나 총관리자만 취소할 수 있습니다.');
   }
+  // FR-121: 총관리자는 대조가 끝난 구간의 체크도 취소한다. 취소분은 그 창구(합쳐졌으면 합친 창구)의 열린 구간에 들어간다
+  let openDesk: string | null = ev.desk_id ?? null;
+  if (me.role === 'admin' && openDesk) {
+    const desks = await allDesks(ctx.db);
+    for (let d = desks.find((x) => x.id === openDesk), n = 0; d?.merged_into && n < 20; d = desks.find((x) => x.id === openDesk), n++) openDesk = d.merged_into;
+  }
   const r = await ctx.db.votes.cancel({
     cancel_id: randomUUID(), issue_id: ev.id, at: nowIso(), actor_id: me.id, actor_name: me.name, reason,
-    operator_name: operatorOf(ctx), device_id: ctx.device?.id ?? null,
+    operator_name: operatorOf(ctx), device_id: ctx.device?.id ?? null, force: me.role === 'admin', open_desk_id: openDesk,
   });
   if (!r.ok) {
-    const msg = r.reason === 'already_canceled' ? '이미 취소된 기록입니다.' : r.reason === 'window_closed' ? '대조가 끝난 구간의 체크는 취소할 수 없습니다. 총관리자 조정으로 처리하세요.' : '기록을 찾을 수 없습니다.';
+    const msg = r.reason === 'already_canceled' ? '이미 취소된 기록입니다.' : r.reason === 'window_closed' ? (me.role === 'admin' ? '대조가 끝난 구간의 체크를 취소하지 못했습니다. DB 함수(vote_cancel)가 최신인지 확인하세요.' : '대조가 끝난 구간의 체크는 총관리자만 취소할 수 있습니다. 총관리자에게 요청하세요.') : '기록을 찾을 수 없습니다.';
     throw new HttpError(409, r.reason, msg);
   }
-  await accessLog(ctx, ev.station_id, 'cancel', ev.voter_sid_hash, 'ok', reason);
-  return { ok: true };
+  await accessLog(ctx, ev.station_id, 'cancel', ev.voter_sid_hash, 'ok', r.late ? `${reason} (대조 끝난 구간의 체크)` : reason);
+  if (r.late) await log(ctx.db, me, 'roster.cancel_late', { station_id: ev.station_id, note: `대조가 끝난 구간의 체크 1건 취소 · ${reason}` });
+  return { ok: true, late: !!r.late };
 }
 
 route('POST', '/roster/cancel', async (ctx) => {

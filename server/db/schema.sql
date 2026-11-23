@@ -175,7 +175,7 @@ begin
 end $$;
 
 create or replace function vote_cancel(p jsonb) returns jsonb language plpgsql as $$
-declare e ballot_event%rowtype; w_status text;
+declare e ballot_event%rowtype; w_status text; late boolean := false; open_desk text;
 begin
   select * into e from ballot_event where id = p->>'issue_id' and kind = 'issue' for update;
   if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
@@ -184,16 +184,23 @@ begin
   end if;
   if e.window_id is not null then
     select status into w_status from tally_window where id = e.window_id;
-    if w_status is distinct from 'reconciling' then return jsonb_build_object('ok', false, 'reason', 'window_closed'); end if;
+    if w_status is distinct from 'reconciling' then
+      -- FR-121: 총관리자는 대조가 끝난 구간의 체크도 취소한다. 끝난 구간은 그대로 두고 취소분은 창구의 열린 구간에 넣는다
+      open_desk := coalesce(p->>'open_desk_id', e.desk_id);
+      if coalesce(p->>'force', '') <> 'true' or open_desk is null then
+        return jsonb_build_object('ok', false, 'reason', 'window_closed');
+      end if;
+      late := true;
+    end if;
   end if;
   insert into ballot_event(id, voter_id, voter_sid_hash, station_id, kind, ref_event_id, is_leave, at, actor_id, actor_name, window_id, source, reason,
                            operator_name, device_id, desk_id)
   values (p->>'cancel_id', e.voter_id, e.voter_sid_hash, e.station_id, 'cancel', e.id, e.is_leave,
-          p->>'at', p->>'actor_id', p->>'actor_name', e.window_id, e.source, p->>'reason',
-          p->>'operator_name', p->>'device_id', e.desk_id);
+          p->>'at', p->>'actor_id', p->>'actor_name', case when late then null else e.window_id end, e.source, p->>'reason',
+          p->>'operator_name', p->>'device_id', case when late then open_desk else e.desk_id end);
   update voter set voted_at = null, voted_station_id = null, voted_event_id = null
     where sid_hash = e.voter_sid_hash and voted_event_id = e.id;
-  return jsonb_build_object('ok', true);
+  return jsonb_build_object('ok', true, 'late', late);
 end $$;
 
 -- v1.4: 구간 배정은 창구 단위. 매개변수 이름이 바뀌어 예전 함수는 먼저 지운다.
@@ -204,7 +211,9 @@ begin
     where desk_id = p_desk and window_id is null and kind = 'issue' and at <= p_boundary;
   update ballot_event c set window_id = p_window
     where c.desk_id = p_desk and c.window_id is null and c.kind = 'cancel'
-      and c.ref_event_id in (select id from ballot_event where window_id = p_window);
+      and (c.ref_event_id in (select id from ballot_event where window_id = p_window)
+        -- FR-121: 이미 끝난 구간의 체크를 뒤늦게 취소한 것은 이번 구간에서 뺀다
+        or (c.at <= p_boundary and exists (select 1 from ballot_event i where i.id = c.ref_event_id and i.window_id is not null and i.window_id <> p_window)));
 end $$;
 
 create or replace function vote_window_counts(p_window text) returns jsonb language sql stable as $$

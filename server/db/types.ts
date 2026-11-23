@@ -34,6 +34,8 @@ export type IssueResult = { ok: true; is_leave: boolean } | { ok: false; voted_a
 export interface CancelInput {
   cancel_id: string; issue_id: string; at: string; actor_id: string; actor_name: string; reason: string;
   operator_name: string | null; device_id: string | null;
+  /** 총관리자: 대조가 끝난 구간의 체크도 취소한다. 취소분은 open_desk_id 창구의 열린 구간에 들어간다 (FR-121). */
+  force?: boolean; open_desk_id?: string | null;
 }
 export interface StationCounts { station_id: string; desk_id: string | null; net: number; leave_net: number; open_net: number; open_leave_net: number }
 export interface HourCount { hour: string; net: number; leave_net: number }
@@ -43,7 +45,7 @@ export interface VoteOps {
   /** 아직 투표하지 않은 경우에만 투표 처리하고 불출 기록을 남긴다. */
   issue(input: IssueInput): Promise<IssueResult>;
   /** 불출 기록을 취소 기록으로 상쇄하고 투표 상태를 푼다. 실패 시 이유 문자열. */
-  cancel(input: CancelInput): Promise<{ ok: true } | { ok: false; reason: string }>;
+  cancel(input: CancelInput): Promise<{ ok: true; late?: boolean } | { ok: false; reason: string }>;
   /** 그 창구의 열린 체크(구간 미배정)를 경계 시각까지 window에 배정한다 (v1.4: 창구 단위). */
   assignWindow(deskId: string, windowId: string, boundaryAt: string): Promise<void>;
   /** 구간의 순 체크 인원(불출 − 취소)과 그중 준회원. */
