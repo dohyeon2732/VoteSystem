@@ -237,7 +237,9 @@ route('POST', '/desks/:id/merge', async (ctx) => {
   if (!from || !to || from.merged_into || to.merged_into || from.id === to.id || from.station_id !== to.station_id) throw new HttpError(400, 'bad_request', '같은 투표소의 다른 창구를 고르세요.');
   const [wins, live] = await Promise.all([ctx.db.all<TallyWindow>('tally_window', { desk_id: from.id, status: 'reconciling' }), ctx.db.votes.liveCounts()]);
   if (wins.length) throw new HttpError(409, 'reconciling', '대조 중인 구간이 있는 창구는 합칠 수 없습니다.');
-  if (Number(live.find((l) => l.desk_id === from.id)?.open_net ?? 0) !== 0) throw new HttpError(409, 'open_checks', '마감하지 않은 체크가 있는 창구는 합칠 수 없습니다. 먼저 마감하세요.');
+  // 순 인원이 0이어도(체크 1건 + 다른 건의 취소 1건) 구간에 안 들어간 기록이 남아 있으면 합친 뒤 마감할 방법이 없으므로 막는다
+  const openEvents = await ctx.db.all<{ id: string }>('ballot_event', { desk_id: from.id, window_id: null }, 'at', 1);
+  if (openEvents.length || Number(live.find((l) => l.desk_id === from.id)?.open_net ?? 0) !== 0) throw new HttpError(409, 'open_checks', '마감하지 않은 체크가 있는 창구는 합칠 수 없습니다. 먼저 마감하세요.');
   await ctx.db.update('ballot_pad', { desk_id: from.id }, { desk_id: to.id });
   await ctx.db.update('device_session', { desk_id: from.id }, { desk_id: to.id });
   if (!to.is_all && !to.is_unassigned) await ctx.db.update('desk', { id: to.id }, { depts: JSON.stringify([...new Set([...parseDepts(to), ...parseDepts(from)])]) });
