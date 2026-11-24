@@ -366,21 +366,18 @@ export function mergedIds(desks: Desk[], deskId: string): Set<string> {
 }
 
 /**
- * 창구의 직전 꼬리표 누적 수: 끝난 구간을 차례로 보며, 누적 수가 적힌 구간은 그 값으로, 없는 구간(v1.4 기록)은 꼬리표 수를 더한다.
- * 이 창구로 합친 창구의 꼬리표도 이 창구에 쌓여 있으므로 함께 더한다.
+ * 창구의 직전 꼬리표 누적 수: 이 창구와 이 창구로 합쳐진 창구의 끝난 구간마다 그 구간에서 늘어난 꼬리표 수를 더한다.
+ * 구간에 적힌 누적 수(total)를 그대로 쓰지 않는 이유: 합친 뒤에 넣는 누적 수는 두 창구를 합친 값이라,
+ * 창구마다 마지막 누적 수를 더하면 합쳐진 창구의 몫이 마감 때마다 한 번씩 더 들어간다 (FR-126).
  */
 export async function tagBaseline(db: Db, deskId: string): Promise<number> {
   const [desks, wins] = await Promise.all([allDesks(db), db.all<TallyWindow>('tally_window', undefined, 'boundary_at')]);
   const ids = mergedIds(desks, deskId);
   let sum = 0;
-  for (const id of ids) {
-    let cum = 0;
-    for (const w of wins) {
-      if (w.desk_id !== id || w.status === 'reconciling') continue;
-      const t = tagTotalOf(w);
-      cum = t ? t.total : cum + (w.tag_count ?? w.accepted_count ?? 0);
-    }
-    sum += cum;
+  for (const w of wins) {
+    if (!w.desk_id || !ids.has(w.desk_id) || w.status === 'reconciling') continue;
+    const t = tagTotalOf(w);
+    sum += t ? t.total - t.prev : w.tag_count ?? w.accepted_count ?? 0;
   }
   return sum;
 }
