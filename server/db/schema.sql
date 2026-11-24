@@ -278,8 +278,8 @@ end $$;
 
 -- 함수는 서버(service_role)만 호출할 수 있게 한다.
 revoke execute on function vote_issue(jsonb), vote_cancel(jsonb), vote_assign_window(text, text, text), vote_window_counts(text),
-  vote_live_counts(), vote_roster_counts(), vote_reset_checks(), vote_rebuild_voter_state(), vote_purge()
+  vote_live_counts(), vote_hourly_counts(), vote_roster_counts(), vote_reset_checks(), vote_rebuild_voter_state(), vote_purge()
   from public, anon, authenticated;
 grant execute on function vote_issue(jsonb), vote_cancel(jsonb), vote_assign_window(text, text, text), vote_window_counts(text),
-  vote_live_counts(), vote_roster_counts(), vote_reset_checks(), vote_rebuild_voter_state(), vote_purge()
+  vote_live_counts(), vote_hourly_counts(), vote_roster_counts(), vote_reset_checks(), vote_rebuild_voter_state(), vote_purge()
   to service_role;

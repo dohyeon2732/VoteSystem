@@ -11,7 +11,7 @@ import type {
   TallyWindow, Voter, VoterAccessLog, VoterKind, BallotPad, Desk, PadMove, PadReading, StationCounts, TagIssue, Dept,
 } from './db/types.js';
 import {
-  addDepts, allDesks, deptLabel, deskOf, deskView, parseDepts, pickDesk, tagBaseline, tagTotalOf,
+  addDepts, allDesks, deptLabel, deskOf, deskView, mergedIds, parseDepts, pickDesk, tagBaseline, tagTotalOf,
   rebuildDepts, resetDeskData, stationDesks, unassignedDesk,
 } from './desks.js';
 import { nowIso, slotEpoch } from './logic/time.js';
@@ -354,8 +354,10 @@ export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station
       const mine = wins.filter((w) => w.station_id === st.id);
       const done = mine.filter((w) => w.status !== 'reconciling').sort((a, b) => a.boundary_at.localeCompare(b.boundary_at));
       const deskRows = desks.filter((d) => d.station_id === st.id && !d.merged_into).map((d) => {
-        const dl = sumLive(live.filter((x) => x.desk_id === d.id));
-        const dw = mine.filter((w) => w.desk_id === d.id);
+        // 합쳐진 창구의 체크와 구간은 합친 창구에 함께 센다 (FR-125)
+        const fam = mergedIds(desks, d.id);
+        const dl = sumLive(live.filter((x) => x.desk_id && fam.has(x.desk_id)));
+        const dw = mine.filter((w) => w.desk_id && fam.has(w.desk_id));
         const dd = dw.filter((w) => w.status !== 'reconciling').sort((a, b) => a.boundary_at.localeCompare(b.boundary_at));
         return {
           desk_id: d.id, name: d.name, is_unassigned: d.is_unassigned, live: dl.net, open: dl.open_net,
@@ -571,21 +573,25 @@ route('GET', '/roster/station', async (ctx) => {
   const desk = await deskOf(ctx, station, ctx.req.query.desk_id);
   // 최근 체크: 투표소 기기는 그 기기에서 한 것, 총관리자는 본인이 한 것
   const mine: Record<string, string> = ctx.device ? { device_id: ctx.device.id } : { actor_id: me.id };
-  const [live, wins, recent, issues, desks] = await Promise.all([
+  const [live, wins, recent, issues, desks, stDesks] = await Promise.all([
     ctx.db.votes.liveCounts(),
     ctx.db.all<TallyWindow>('tally_window', { desk_id: desk.id }, 'boundary_at desc'),
     ctx.db.all<BallotEvent>('ballot_event', { ...mine, station_id: station.id, kind: 'issue' }, 'at desc', 5),
     ctx.db.all<TagIssue>('tag_issue', { desk_id: desk.id }, 'at desc', 20),
     me.role !== 'station' ? stationDesks(ctx.db, station.id) : Promise.resolve([] as Desk[]),
+    ctx.db.all<Desk>('desk', { station_id: station.id }),
   ]);
   const canceled = new Set((await ctx.db.allIn<BallotEvent>('ballot_event', 'ref_event_id', recent.map((e) => e.id))).map((c) => c.ref_event_id));
   const reconciling = wins.find((w) => w.status === 'reconciling') ?? null;
   const l = live.find((x) => x.desk_id === desk.id);
+  // 합쳐진 창구의 체크는 옮기지 않으므로 누적 수에는 함께 센다 (FR-125). 꼬리표 누적 수 기준(tagBaseline)과 같은 범위
+  const family = mergedIds(stDesks, desk.id);
+  const fam = sumLive(live.filter((x) => x.desk_id && family.has(x.desk_id)));
   return {
     station, hours: stationHours(station, el, pl.days), desk: deskView(desk), desks: desks.map(deskView),
     open_count: Number(l?.open_net ?? 0), open_leave: Number(l?.open_leave_net ?? 0),
     // 이 창구에서 첫날부터 지금까지 불출한 인원 (취소 제외). 꼬리표 누적 수와 맞아야 하는 숫자
-    total_count: Number(l?.net ?? 0), total_leave: Number(l?.leave_net ?? 0),
+    total_count: fam.net, total_leave: fam.leave_net,
     reconciling: reconciling ? { ...reconciling, ...(await ctx.db.votes.windowCounts(reconciling.id)) } : null,
     last_window: wins.find((w) => w.status !== 'reconciling') ?? null,
     issue_count: issues.filter((i) => !i.voided_at).length,

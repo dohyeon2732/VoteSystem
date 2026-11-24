@@ -358,14 +358,20 @@ export function tagTotalOf(w: Pick<TallyWindow, 'pad_json'>): TagTotal | null {
     return j && !Array.isArray(j) && Number.isFinite(j.total) ? { total: Number(j.total), prev: Number(j.prev ?? 0) } : null;
   } catch { return null; }
 }
+/** 이 창구와, 이 창구로 합쳐진 창구들의 id (합치기를 여러 번 한 경우까지). 체크 기록은 옮기지 않으므로 숫자를 낼 때 함께 센다. */
+export function mergedIds(desks: Desk[], deskId: string): Set<string> {
+  const ids = new Set([deskId]);
+  for (let grew = true; grew;) { grew = false; for (const d of desks) if (d.merged_into && ids.has(d.merged_into) && !ids.has(d.id)) { ids.add(d.id); grew = true; } }
+  return ids;
+}
+
 /**
  * 창구의 직전 꼬리표 누적 수: 끝난 구간을 차례로 보며, 누적 수가 적힌 구간은 그 값으로, 없는 구간(v1.4 기록)은 꼬리표 수를 더한다.
  * 이 창구로 합친 창구의 꼬리표도 이 창구에 쌓여 있으므로 함께 더한다.
  */
 export async function tagBaseline(db: Db, deskId: string): Promise<number> {
   const [desks, wins] = await Promise.all([allDesks(db), db.all<TallyWindow>('tally_window', undefined, 'boundary_at')]);
-  const ids = new Set([deskId]);
-  for (let grew = true; grew;) { grew = false; for (const d of desks) if (d.merged_into && ids.has(d.merged_into) && !ids.has(d.id)) { ids.add(d.id); grew = true; } }
+  const ids = mergedIds(desks, deskId);
   let sum = 0;
   for (const id of ids) {
     let cum = 0;
