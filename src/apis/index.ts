@@ -64,6 +64,8 @@ export interface Forecast {
   past: { date: string; gain: number; total: number }[];
   avg_gain: number; ratio: number; ratio_applied: boolean;
   points: { time: string; add: number; leave_add: number }[];
+  /** 연장일까지 갔을 때 오늘 마감 뒤 더해질 예상 증가 범위 (FR-131) */
+  extension?: { date: string; low: number; high: number; low_leave: number; high_leave: number } | null;
 }
 
 // ---- 선거인명부 (v1.1) ----

@@ -111,6 +111,10 @@ export default function Dashboard() {
   const checkPoint = fcBack ? todayPoints.filter((p) => p.time > fcBack.as_of!).at(-1) ?? null : null;
   const checkFc = checkPoint ? fcBack?.points.find((p) => p.time === checkPoint.time) ?? null : null;
   const nowEnd = roster?.forecast?.points.at(-1) ?? null;
+  // 연장 마감 예상 범위 (FR-131): 지금 기준 오늘 예상 마감에 연장일 증가(낮게·높게)를 더한다
+  const extRaw = !fcBack && live ? roster?.forecast?.extension ?? null : null;
+  const extCum = liveT.cumulative + (nowEnd?.add ?? 0), extVoters = liveT.voters + (nowEnd?.leave_add ?? 0);
+  const ext = extRaw ? { date: extRaw.date, lowPct: pctOf(extCum + extRaw.low, extVoters + extRaw.low_leave), highPct: pctOf(extCum + extRaw.high, extVoters + extRaw.high_leave) } : null;
   const signed = (n: number) => `${n >= 0 ? '+' : '−'}${fmtNum(Math.abs(n))}`;
   const spring = { type: 'spring', bounce: 0, duration: 0.5 } as const;
   const missLabel = roster ? '대조 미완료' : '미입력';
@@ -232,6 +236,12 @@ export default function Dashboard() {
                   <b>예상 마감({fcEnd.time}) {fmtPct(pctOf(fcEndCum, fcEndVoters))}</b> · 누적 {fmtNum(fcEndCum)}명 ({fcBack ? `${fcBack.as_of}부터` : '지금부터'} {signed(fcEnd.add)}명)
                   {' · '}{pctOf(fcEndCum, fcEndVoters) >= th ? `기준 ${th}% 넘김` : `기준 ${th}%까지 ${fmtNum(remainingToThreshold(fcEndVoters, fcEndCum, th))}명 부족`}
                   {fcBack && nowEnd && <span className="muted"> · 지금 기준 예상 {fmtPct(pctOf(liveT.cumulative + nowEnd.add, liveT.voters + nowEnd.leave_add))}</span>}
+                </div>
+              )}
+              {ext && (
+                <div>
+                  <b>연장 마감({shortDate(ext.date)}) 예상 {fmtPct(ext.lowPct)} ~ {fmtPct(ext.highPct)}</b>
+                  {' · '}{ext.lowPct >= th ? `기준 ${th}% 넘김` : ext.highPct >= th ? `낮게 보면 기준 ${th}% 부족` : `기준 ${th}% 부족`}
                 </div>
               )}
             </div>

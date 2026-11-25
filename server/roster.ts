@@ -335,6 +335,25 @@ export interface Forecast {
   past: { date: string; gain: number; total: number }[];
   avg_gain: number; ratio: number; ratio_applied: boolean;
   points: { time: string; add: number; leave_add: number }[];
+  /** 연장일까지 갔을 때 오늘 마감 뒤 더해질 예상 증가 범위 (FR-131) */
+  extension?: { date: string; low: number; high: number; low_leave: number; high_leave: number } | null;
+}
+
+/**
+ * 연장일 하루의 예상 증가 범위 (FR-131). 본투표 마지막 날에만 낸다.
+ * 높게: 본투표 날들의 하루 증가 평균. 낮게: 오늘 하루 증가 × 줄어든 비율(오늘 ÷ 전날, 최대 1).
+ */
+export function buildExtension(f: Forecast, days: { date: string; is_extension: boolean }[]): Forecast['extension'] {
+  const regular = days.filter((d) => !d.is_extension).map((d) => d.date).sort();
+  const ext = days.filter((d) => d.is_extension && d.date > f.today).map((d) => d.date).sort()[0];
+  if (!ext || regular.at(-1) !== f.today || !f.past.length) return null;
+  const todayTotal = f.today_gain + (f.points.at(-1)?.add ?? 0);
+  const prev = f.past[f.past.length - 1].total;
+  const mean = (f.past.reduce((a, p) => a + p.total, 0) + todayTotal) / (f.past.length + 1);
+  const decayed = todayTotal * (prev > 0 ? Math.min(1, todayTotal / prev) : 1);
+  const low = Math.max(0, Math.round(Math.min(mean, decayed))), high = Math.max(0, Math.round(Math.max(mean, decayed)));
+  const share = f.today_gain > 0 ? Math.max(0, f.today_leave_gain) / f.today_gain : 0;
+  return { date: ext, low, high, low_leave: Math.round(low * share), high_leave: Math.round(high * share) };
 }
 const HOUR_MS = 3600 * 1000;
 /** 지난 투표일의 같은 시각 증가가 이보다 적으면 오늘 속도 비율을 믿지 않고 1로 둔다 */
@@ -402,6 +421,7 @@ export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station
       });
     const sorted = [...dates].sort(), today = kstDate(now);
     forecast = buildForecast(buckets, sorted, times, now);
+    if (forecast) forecast.extension = buildExtension(forecast, days);
     // 오늘 지난 정각마다 그 시각 기준으로 다시 낸 예상 (FR-128). 종료 시각은 남은 구간이 없어 뺀다
     if (forecast) forecasts_past = times.slice(0, -1).filter((t) => slotEpoch(today, t) <= now)
       .map((t) => buildForecast(buckets, sorted, times, slotEpoch(today, t), t)).filter((f): f is Forecast => !!f);
