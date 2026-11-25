@@ -71,6 +71,18 @@ export default function Dashboard() {
         { label: '지금', pct: liveT.pct, cumulative: liveT.cumulative },
       ].filter((p, i, a) => i < a.length - 1 || a.length === 1 || p.cumulative !== a[i - 1].cumulative)
     : tally.points.map((p) => ({ label: pointLabel(p), pct: p.total.pct, cumulative: p.total.cumulative }));
+  // 예상 (FR-127): 지금 값에 남은 구간의 예상 증가를 더해 점선으로 잇는다
+  const fc = live ? roster?.forecast ?? null : null;
+  type SeriesPoint = { label: string; pct?: number; cumulative: number; forecast?: number };
+  const chartData: SeriesPoint[] = series.map((p) => ({ ...p }));
+  if (fc?.points.length && chartData.length) {
+    chartData[chartData.length - 1].forecast = liveT.pct;
+    for (const p of fc.points) chartData.push({ label: pointLabel({ date: fc.today, time: p.time }), cumulative: liveT.cumulative + p.add, forecast: pctOf(liveT.cumulative + p.add, liveT.voters + p.leave_add) });
+  }
+  const fcEnd = fc?.points.at(-1) ?? null;
+  const fcEndCum = fcEnd ? liveT.cumulative + fcEnd.add : 0, fcEndVoters = fcEnd ? liveT.voters + fcEnd.leave_add : 0;
+  const fcStartPct = fc ? pctOf(liveT.cumulative - fc.today_gain, liveT.voters - fc.today_leave_gain) : 0;
+  const signed = (n: number) => `${n >= 0 ? '+' : '−'}${fmtNum(Math.abs(n))}`;
   const spring = { type: 'spring', bounce: 0, duration: 0.5 } as const;
   const missLabel = roster ? '대조 미완료' : '미입력';
   const liveTotal = roster ? roster.stations.reduce((a, s) => a + s.live, 0) : 0;
@@ -153,16 +165,36 @@ export default function Dashboard() {
           <h2 style={{ marginBottom: 8 }}>{live ? '시간별 전체 투표율 추이 (실시간)' : '시점별 전체 투표율 추이'}</h2>
           <div style={{ width: '100%', height: 220 }}>
             <ResponsiveContainer>
-              <LineChart data={series} margin={{ top: 8, right: 12, left: -16, bottom: 0 }}>
+              <LineChart data={chartData} margin={{ top: 8, right: 12, left: -16, bottom: 0 }}>
                 <CartesianGrid stroke="var(--border)" vertical={false} />
                 <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--muted)' }} interval="preserveStartEnd" minTickGap={24} />
                 <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: 'var(--muted)' }} unit="%" />
-                <Tooltip formatter={(v: number, _n: string, item: { payload?: { cumulative?: number } }) => [`${fmtPct(v)} (${fmtNum(item.payload?.cumulative ?? 0)}명)`, '전체 투표율']} contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)' }} />
+                <Tooltip formatter={(v: number, _n: string, item: { dataKey?: string | number; payload?: { cumulative?: number } }) => [`${fmtPct(v)} (${fmtNum(item.payload?.cumulative ?? 0)}명)`, item.dataKey === 'forecast' ? '예상 투표율' : '전체 투표율']} contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)' }} />
                 <ReferenceLine y={th} stroke="var(--danger)" strokeDasharray="4 4" />
                 <Line type="monotone" dataKey="pct" stroke="var(--accent)" strokeWidth={2.5} dot={{ r: 2 }} isAnimationActive={!reduce} />
+                {fc && fc.points.length > 0 && <Line type="monotone" dataKey="forecast" stroke="var(--accent)" strokeWidth={2} strokeDasharray="5 5" strokeOpacity={0.7} dot={{ r: 2 }} isAnimationActive={false} />}
               </LineChart>
             </ResponsiveContainer>
           </div>
+          {fc && (
+            <div className="small" style={{ marginTop: 8, display: 'grid', gap: 4 }}>
+              <div><b>오늘 지금까지 {signed(fc.today_gain)}명</b> ({(liveT.pct - fcStartPct >= 0 ? '+' : '') + (liveT.pct - fcStartPct).toFixed(2)}%p)</div>
+              <div className="muted">
+                같은 시각까지: {fc.past.map((p) => `${shortDate(p.date)} ${signed(p.gain)}명`).join(' · ')}
+                {fc.past.length > 1 && ` · 평균 ${signed(fc.avg_gain)}명`}
+                {fc.avg_gain > 0 && <> → 오늘은 {fc.past.length > 1 ? '평균' : '전일'}의 <b style={{ color: 'var(--text)' }}>{Math.round(fc.ratio * 100)}%</b> ({signed(fc.today_gain - fc.avg_gain)}명)</>}
+              </div>
+              {fcEnd && (
+                <div>
+                  <b>예상 마감({fcEnd.time}) {fmtPct(pctOf(fcEndCum, fcEndVoters))}</b> · 누적 {fmtNum(fcEndCum)}명 (지금부터 {signed(fcEnd.add)}명)
+                  {' · '}{pctOf(fcEndCum, fcEndVoters) >= th ? `기준 ${th}% 넘김` : `기준 ${th}%까지 ${fmtNum(remainingToThreshold(fcEndVoters, fcEndCum, th))}명 부족`}
+                </div>
+              )}
+              <div className="muted">
+                점선은 예상입니다. 지난 투표일의 같은 1시간 구간 증가 평균{fc.ratio_applied ? `에 오늘 속도(${Math.round(fc.ratio * 100)}%)를 곱했습니다.` : '을 그대로 더했습니다(비교할 인원이 아직 적어 오늘 속도는 반영하지 않음).'}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
