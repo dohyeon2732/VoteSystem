@@ -76,6 +76,9 @@ create table if not exists voter_access_log (
   id text primary key, at text not null, member_id text not null, member_name text not null, station_id text,
   action text not null, sid_hash8 text, result text, note text);
 create index if not exists voter_access_log_at_idx on voter_access_log(at);
+-- 체크한 학번 (FR-130): 선거인별로 암호화한 학번 한 줄. id = voter.id
+create table if not exists voter_sid (id text primary key, sid_enc text not null, created_at text not null);
+alter table voter_sid enable row level security;
 alter table voter enable row level security;
 alter table ballot_event enable row level security;
 alter table tally_window enable row level security;
@@ -273,6 +276,7 @@ begin
   perform set_config('vote.allow_purge', 'on', true);
   delete from ballot_event where id is not null;
   delete from voter where id is not null;
+  delete from voter_sid where id is not null;
   update voter_access_log set sid_hash8 = null where sid_hash8 is not null;
 end $$;
 

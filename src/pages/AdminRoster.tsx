@@ -178,8 +178,89 @@ function Uploader({ districts, disabled, onDone, setMsg }: { districts: District
 const SURNAMES = '김이박최정강조윤장임한오서신권황안송류전홍고문양손배백허유남심노하곽성차주우구민진나지엄채원천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예경봉사부가복태목형피두감음빈동온호범좌팽승간상시갈단견당';
 const GIVEN = '민서지현준우도윤하은수진예린시아건영호성재희유연채원승혜정태경나리선미주아인혁찬규';
 
+type CheckedRow = { at: string; sid: string | null; name: string; dept: string; is_leave: boolean; station_name: string; desk_name: string; operator_name: string };
+
+/** 체크 학번 목록 (FR-130): 선거구 투표소에서 한 체크를 시각순으로, 저장된 학번과 함께 본다. */
+function CheckedSids({ districts }: { districts: District[] }) {
+  const [districtId, setDistrictId] = useState('');
+  const [data, setData] = useState<{ rows: CheckedRow[]; missing: number; sid_ready: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [desk, setDesk] = useState('');
+  const [copied, setCopied] = useState(false);
+  const load = async () => {
+    setBusy(true); setErr('');
+    try { setData(await api(`/roster/checked-sids?district_id=${encodeURIComponent(districtId)}`)); setDesk(''); }
+    catch (e) { setErr(e instanceof Error ? e.message : '불러오지 못했습니다.'); }
+    finally { setBusy(false); }
+  };
+  const deskNames = [...new Set((data?.rows ?? []).map((r) => r.desk_name).filter(Boolean))].sort();
+  const shown = (data?.rows ?? []).filter((r) => (!from || Date.parse(r.at) >= Date.parse(from)) && (!to || Date.parse(r.at) <= Date.parse(to)) && (!desk || r.desk_name === desk));
+  const when = (at: string) => new Date(at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+  const copy = async () => {
+    const lines = shown.map((r) => [r.sid ?? '', r.name, r.dept, when(r.at), r.station_name, r.desk_name, r.operator_name].join('\t'));
+    await navigator.clipboard.writeText(['학번\t이름\t학과\t체크 시각\t투표소\t창구\t담당자', ...lines].join('\n'));
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="card stack">
+      <h1>체크 학번 목록 (총관리자)</h1>
+      <p className="muted small">선거구를 고르면 그 선거구 투표소에서 체크한 사람을 시각순으로 보여 줍니다(취소된 체크 제외). 학번은 이 기능이 켜진 뒤 조회한 것만 저장돼 있고, 그 전 체크는 위의 학번 일괄 대조에 학번을 넣으면 채워집니다. 조회한 사실은 접근 로그에 남습니다.</p>
+      <div className="form-row" style={{ alignItems: 'flex-end' }}>
+        <div className="field" style={{ flex: '0 0 auto' }}><label>선거구</label>
+          <select className="input" aria-label="선거구" value={districtId} onChange={(e) => { setDistrictId(e.target.value); setData(null); }}>
+            <option value="">선택</option>
+            {districts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </div>
+        <button className="btn primary" disabled={busy || !districtId} onClick={load}>{busy ? '불러오는 중…' : '조회'}</button>
+      </div>
+      {err && <div className="alert danger small">{err}</div>}
+      {data && (
+        <>
+          {!data.sid_ready && <div className="alert danger small">학번을 저장할 표가 아직 없습니다. Supabase SQL 편집기에서 schema.sql을 다시 실행해야 학번이 저장됩니다.</div>}
+          <div className={`alert ${data.missing > 0 ? 'warn' : 'good'} small`}>체크 {fmtNum(data.rows.length)}건 · 학번 있음 {fmtNum(data.rows.length - data.missing)}건 · 학번 없음 {fmtNum(data.missing)}건</div>
+          <div className="form-row" style={{ alignItems: 'flex-end' }}>
+            <div className="field" style={{ flex: '0 0 auto' }}><label>부터</label><input className="input" type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+            <div className="field" style={{ flex: '0 0 auto' }}><label>까지</label><input className="input" type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+            {deskNames.length > 1 && (
+              <div className="field" style={{ flex: '0 0 auto' }}><label>창구</label>
+                <select className="input" value={desk} onChange={(e) => setDesk(e.target.value)}>
+                  <option value="">전체</option>
+                  {deskNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+            )}
+            <span className="muted small">{fmtNum(shown.length)}건</span>
+            <button className="btn sm" disabled={shown.length === 0} onClick={copy}>{copied ? '복사했습니다' : '표 복사 (엑셀용)'}</button>
+          </div>
+          <div style={{ overflow: 'auto', maxHeight: 420 }}>
+            <table>
+              <thead><tr><th>체크 시각</th><th>학번</th><th>이름</th><th>학과</th><th>투표소 · 창구</th><th>담당자</th></tr></thead>
+              <tbody>
+                {shown.map((r, i) => (
+                  <tr key={i}>
+                    <td className="small">{fmtTime(r.at)}</td>
+                    <td className="mono">{r.sid ?? <span className="muted">없음</span>}</td>
+                    <td>{r.name}</td>
+                    <td>{r.dept}</td>
+                    <td className="small">{r.station_name}{r.desk_name ? ` · ${r.desk_name}` : ''}</td>
+                    <td className="small">{r.operator_name}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** 리허설용 가짜 명부 23,000명 (FR-84). 학번은 99로 시작 */
-type SidRow = { sid: string; result: 'voted' | 'not_voted' | 'not_found' | 'bad' | 'duplicate'; name?: string; dept?: string; voted_at?: string | null; voted_station_name?: string };
+type SidRow = { sid: string; result: 'voted' | 'not_voted' | 'not_found' | 'bad' | 'duplicate'; name?: string; dept?: string; voted_at?: string | null; voted_station_name?: string; voted_desk_name?: string };
 const SID_RESULT: Record<SidRow['result'], string> = { not_voted: '체크 안 됨', voted: '체크됨', not_found: '명부에 없음', bad: '학번 형식 오류', duplicate: '목록에 중복' };
 const SID_ORDER: SidRow['result'][] = ['not_voted', 'not_found', 'bad', 'duplicate', 'voted'];
 
@@ -200,6 +281,24 @@ function SidCheck() {
     finally { setBusy(false); }
   };
   const count = (r: SidRow['result']) => rows?.filter((x) => x.result === r).length ?? 0;
+  // 체크된 학번만 시각순으로 추려 보기 (FR-129)
+  const [onlyVoted, setOnlyVoted] = useState(false);
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [desk, setDesk] = useState('');
+  const [copied, setCopied] = useState(false);
+  const deskNames = [...new Set((rows ?? []).map((r) => r.voted_desk_name).filter((x): x is string => !!x))].sort();
+  const shown = !rows ? [] : !onlyVoted ? rows : rows
+    .filter((r) => r.result === 'voted' && !!r.voted_at
+      && (!from || Date.parse(r.voted_at) >= Date.parse(from)) && (!to || Date.parse(r.voted_at) <= Date.parse(to))
+      && (!desk || r.voted_desk_name === desk))
+    .sort((a, b) => a.voted_at!.localeCompare(b.voted_at!));
+  const when = (at: string) => new Date(at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+  const copy = async () => {
+    const lines = shown.map((r) => [r.sid, SID_RESULT[r.result], r.name ?? '', r.dept ?? '', r.voted_at ? when(r.voted_at) : '', r.voted_station_name ?? '', r.voted_desk_name ?? ''].join('\t'));
+    await navigator.clipboard.writeText(['학번\t결과\t이름\t학과\t체크 시각\t투표소\t창구', ...lines].join('\n'));
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
+  };
   return (
     <div className="card stack">
       <h1>학번 일괄 대조</h1>
@@ -216,17 +315,39 @@ function SidCheck() {
             체크 안 됨 {count('not_voted')}명 · 명부에 없음 {count('not_found')}건 · 체크됨 {count('voted')}명
             {count('bad') + count('duplicate') > 0 ? ` · 형식 오류 ${count('bad')}건 · 중복 ${count('duplicate')}건` : ''}
           </div>
+          <div className="form-row" style={{ alignItems: 'flex-end' }}>
+            <div className="chips">
+              <button className={`chip ${!onlyVoted ? 'active' : ''}`} aria-pressed={!onlyVoted} onClick={() => setOnlyVoted(false)}>전체</button>
+              <button className={`chip ${onlyVoted ? 'active' : ''}`} aria-pressed={onlyVoted} onClick={() => setOnlyVoted(true)}>체크된 학번만 (시각순)</button>
+            </div>
+            {onlyVoted && (
+              <>
+                <div className="field" style={{ flex: '0 0 auto' }}><label>부터</label><input className="input" type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+                <div className="field" style={{ flex: '0 0 auto' }}><label>까지</label><input className="input" type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+                {deskNames.length > 1 && (
+                  <div className="field" style={{ flex: '0 0 auto' }}><label>창구</label>
+                    <select className="input" value={desk} onChange={(e) => setDesk(e.target.value)}>
+                      <option value="">전체</option>
+                      {deskNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </div>
+                )}
+              </>
+            )}
+            <span className="muted small">{fmtNum(shown.length)}건</span>
+            <button className="btn sm" disabled={shown.length === 0} onClick={copy}>{copied ? '복사했습니다' : '표 복사 (엑셀용)'}</button>
+          </div>
           <div style={{ overflowX: 'auto' }}>
             <table>
-              <thead><tr><th>학번</th><th>결과</th><th>이름</th><th>학과</th><th>체크 시각 · 투표소</th></tr></thead>
+              <thead><tr><th>학번</th><th>결과</th><th>이름</th><th>학과</th><th>체크 시각 · 투표소 · 창구</th></tr></thead>
               <tbody>
-                {rows.map((r, i) => (
+                {shown.map((r, i) => (
                   <tr key={i}>
                     <td className="mono">{r.sid}</td>
                     <td><span className={`pill ${r.result === 'voted' ? 'good' : r.result === 'not_voted' ? 'danger' : 'warn'}`}>{SID_RESULT[r.result]}</span></td>
                     <td>{r.name ?? ''}</td>
                     <td>{r.dept ?? ''}</td>
-                    <td className="small">{r.voted_at ? `${fmtTime(r.voted_at)} · ${r.voted_station_name}` : ''}</td>
+                    <td className="small">{r.voted_at ? `${fmtTime(r.voted_at)} · ${r.voted_station_name}${r.voted_desk_name ? ` · ${r.voted_desk_name}` : ''}` : ''}</td>
                   </tr>
                 ))}
               </tbody>
@@ -434,6 +555,8 @@ export default function AdminRoster() {
       </div>
 
       <SidCheck />
+
+      <CheckedSids districts={config?.districts ?? []} />
 
       <div className="grid cols-2">
         <div className="card stack">

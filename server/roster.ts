@@ -8,7 +8,7 @@ import {
 } from './core.js';
 import type {
   BallotEvent, BallotSource, Db, DeviceSession, District, Election, ElectionDay, Entry, Member, OperatorLog, Slot, Station,
-  TallyWindow, Voter, VoterAccessLog, VoterKind, BallotPad, Desk, PadMove, PadReading, StationCounts, TagIssue, Dept,
+  TallyWindow, Voter, VoterAccessLog, VoterKind, BallotPad, Desk, PadMove, PadReading, StationCounts, TagIssue, Dept, VoterSid,
 } from './db/types.js';
 import {
   addDepts, allDesks, deptLabel, deskOf, deskView, mergedIds, parseDepts, pickDesk, tagBaseline, tagTotalOf,
@@ -194,6 +194,17 @@ async function resolveStation(ctx: Ctx, stationId: unknown, pl: Awaited<ReturnTy
 async function stationFor(ctx: Ctx, stationId: string, skipHours?: boolean): Promise<Station> {
   const [el, pl] = await Promise.all([election(ctx.db), places(ctx.db)]);
   return resolveStation(ctx, stationId, pl, el, skipHours);
+}
+
+/**
+ * 학번을 암호화해 선거인별로 한 번 저장한다 (FR-130).
+ * 표가 아직 없거나 이미 저장돼 있으면 조용히 넘어간다. 조회·체크를 막지 않는다.
+ */
+async function rememberSid(db: Db, voterId: string, sid: string): Promise<void> {
+  try {
+    if (await db.get<VoterSid>('voter_sid', { id: voterId })) return;
+    await db.insert<VoterSid>('voter_sid', { id: voterId, sid_enc: encrypt(sid), created_at: nowIso() });
+  } catch { /* 표가 없거나 동시에 들어온 같은 학번 */ }
 }
 
 function voterView(v: Voter) {
@@ -504,6 +515,7 @@ route('POST', '/roster/lookup', async (ctx) => {
     await accessLog(ctx, station.id, 'lookup', null, 'rate_limited');
     throw new HttpError(429, 'rate_limited', '조회가 너무 잦습니다. 1분 뒤 다시 시도하세요.');
   }
+  if (v && v.district_id === station.district_id) await rememberSid(ctx.db, v.id, sid);
   let out: Record<string, unknown>;
   let result: string;
   if (!v) {
@@ -1108,7 +1120,7 @@ route('POST', '/roster/check-sids', async (ctx) => {
   const raw: unknown[] = Array.isArray(ctx.req.body?.sids) ? ctx.req.body.sids : [];
   if (raw.length === 0) throw new HttpError(400, 'bad_request', '학번을 넣으세요.');
   if (raw.length > 500) throw new HttpError(400, 'bad_request', '한 번에 500개까지 대조할 수 있습니다.');
-  const pl = await places(ctx.db);
+  const [pl, desks] = await Promise.all([places(ctx.db), allDesks(ctx.db)]);
   const seen = new Set<string>();
   const rows: Record<string, unknown>[] = [];
   const todo: { sid: string; row: Record<string, unknown> }[] = [];
@@ -1125,15 +1137,50 @@ route('POST', '/roster/check-sids', async (ctx) => {
       const v = await ctx.db.get<Voter>('voter', { sid_hash: hashSid(sid), batch_id: null });
       if (!v) { row.result = 'not_found'; return; }
       const { name, dept, kind } = voterView(v);
+      // 체크한 창구 (FR-129): 그 체크 기록의 창구 이름
+      const ev = v.voted_at && v.voted_event_id ? await ctx.db.get<BallotEvent>('ballot_event', { id: v.voted_event_id }) : null;
+      // 지난 체크의 학번 채우기 (FR-130)
+      if (v.voted_at) await rememberSid(ctx.db, v.id, sid);
       Object.assign(row, {
         result: v.voted_at ? 'voted' : 'not_voted', name, dept, kind, voted_at: v.voted_at,
         voted_station_name: v.voted_at ? pl.stations.find((s) => s.id === v.voted_station_id)?.name ?? '' : '',
+        voted_desk_name: ev?.desk_id ? desks.find((d) => d.id === ev.desk_id)?.name ?? '' : '',
       });
     }));
   }
   const n = (r: string) => rows.filter((x) => x.result === r).length;
   await accessLog(ctx, null, 'check_sids', null, 'ok', `${rows.length}건 · 미체크 ${n('not_voted')} · 체크됨 ${n('voted')} · 명부에 없음 ${n('not_found')}`);
   return { status: 200, body: { rows }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
+});
+
+// ---------- 체크 학번 목록 (FR-130) ----------
+/** 선거구 투표소에서 한 체크(취소 제외)를 시각순으로, 저장된 학번과 함께. 총관리자만. */
+route('GET', '/roster/checked-sids', async (ctx) => {
+  requireAdmin(ctx);
+  const districtId = str(ctx.req.query.district_id, '선거구');
+  const [pl, desks] = await Promise.all([places(ctx.db), allDesks(ctx.db)]);
+  const stations = pl.stations.filter((s) => s.district_id === districtId);
+  if (!stations.length) throw new HttpError(404, 'not_found', '선거구를 찾을 수 없습니다.');
+  const [events, voters, sids] = await Promise.all([
+    Promise.all(stations.map((s) => ctx.db.all<BallotEvent>('ballot_event', { station_id: s.id }, 'at'))).then((x) => x.flat()),
+    ctx.db.all<Voter>('voter', { district_id: districtId }),
+    ctx.db.all<VoterSid>('voter_sid').catch(() => null),
+  ]);
+  const canceled = new Set(events.filter((e) => e.kind === 'cancel').map((e) => e.ref_event_id));
+  const voterOf = new Map(voters.map((v) => [v.id, v]));
+  const sidOf = new Map((sids ?? []).map((x) => [x.id, x.sid_enc]));
+  const rows = events.filter((e) => e.kind === 'issue' && !canceled.has(e.id)).sort((a, b) => a.at.localeCompare(b.at)).map((e) => {
+    const v = voterOf.get(e.voter_id), enc = sidOf.get(e.voter_id);
+    const view = v ? voterView(v) : null;
+    return {
+      at: e.at, sid: enc ? decrypt(enc) : null, name: view?.name ?? '', dept: view?.dept ?? '', is_leave: e.is_leave,
+      station_name: stations.find((s) => s.id === e.station_id)?.name ?? '',
+      desk_name: e.desk_id ? desks.find((d) => d.id === e.desk_id)?.name ?? '' : '', operator_name: e.operator_name ?? '',
+    };
+  });
+  const missing = rows.filter((r) => !r.sid).length;
+  await accessLog(ctx, null, 'checked_sids', null, 'ok', `${pl.districts.find((d) => d.id === districtId)?.name ?? ''} · ${rows.length}건 · 학번 없음 ${missing}건`);
+  return { status: 200, body: { rows, missing, sid_ready: sids !== null }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
 });
 
 // ---------- 보유기간·파기 (FR-99) ----------
