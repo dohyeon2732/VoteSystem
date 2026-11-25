@@ -1173,6 +1173,49 @@ route('POST', '/roster/check-sids', async (ctx) => {
   return { status: 200, body: { rows }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
 });
 
+// ---------- 목록에 없는 체크 찾기 (FR-132) ----------
+/** 붙여 넣은 학번 목록에는 없는데 체크된, 고른 학과의 선거인. 총관리자만. */
+route('POST', '/roster/check-sids-missing', async (ctx) => {
+  requireAdmin(ctx);
+  const raw: unknown[] = Array.isArray(ctx.req.body?.sids) ? ctx.req.body.sids : [];
+  const depts = new Set((Array.isArray(ctx.req.body?.depts) ? ctx.req.body.depts : []).map((x: unknown) => String(x)));
+  if (raw.length === 0) throw new HttpError(400, 'bad_request', '학번을 넣으세요.');
+  if (raw.length > 3000) throw new HttpError(400, 'bad_request', '한 번에 3,000개까지 대조할 수 있습니다.');
+  if (depts.size === 0) throw new HttpError(400, 'bad_request', '학과를 고르세요.');
+  const sids = [...new Set(raw.map(normalizeSid).filter((s) => s.length >= 4 && s.length <= 20))];
+  const hashes = new Set(sids.map(hashSid));
+  // 고른 학과가 속한 선거구: 목록의 학번으로 찾는다
+  const districts = new Set<string>();
+  const found = new Set<string>();
+  for (let i = 0; i < sids.length && found.size < depts.size; i += 25) {
+    const vs = await Promise.all(sids.slice(i, i + 25).map((sid) => ctx.db.get<Voter>('voter', { sid_hash: hashSid(sid), batch_id: null })));
+    for (const v of vs) {
+      if (!v) continue;
+      const dept = voterView(v).dept;
+      if (depts.has(dept)) { found.add(dept); districts.add(v.district_id); }
+    }
+  }
+  const [pl, desks, sidRows, voters] = await Promise.all([
+    places(ctx.db), allDesks(ctx.db), ctx.db.all<VoterSid>('voter_sid').catch(() => null),
+    Promise.all([...districts].map((d) => ctx.db.all<Voter>('voter', { district_id: d }))).then((x) => x.flat()),
+  ]);
+  const sidOf = new Map((sidRows ?? []).map((x) => [x.id, x.sid_enc]));
+  const hits = voters.filter((v) => !v.batch_id && v.voted_at && !hashes.has(v.sid_hash))
+    .map((v) => ({ v, view: voterView(v) })).filter((x) => depts.has(x.view.dept))
+    .sort((a, b) => a.v.voted_at!.localeCompare(b.v.voted_at!));
+  const rows = await Promise.all(hits.map(async ({ v, view }) => {
+    const ev = v.voted_event_id ? await ctx.db.get<BallotEvent>('ballot_event', { id: v.voted_event_id }) : null;
+    const enc = sidOf.get(v.id);
+    return {
+      sid: enc ? decrypt(enc) : null, name: view.name, dept: view.dept, voted_at: v.voted_at,
+      station_name: pl.stations.find((s) => s.id === v.voted_station_id)?.name ?? '',
+      desk_name: ev?.desk_id ? desks.find((d) => d.id === ev.desk_id)?.name ?? '' : '', operator_name: ev?.operator_name ?? '',
+    };
+  }));
+  await accessLog(ctx, null, 'check_sids_missing', null, 'ok', `${[...depts].join(', ')} · 목록 ${sids.length}개 · 목록에 없는 체크 ${rows.length}명`);
+  return { status: 200, body: { rows }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
+});
+
 // ---------- 체크 학번 목록 (FR-130) ----------
 /** 선거구 투표소에서 한 체크(취소 제외)를 시각순으로, 저장된 학번과 함께. 총관리자만. */
 route('GET', '/roster/checked-sids', async (ctx) => {

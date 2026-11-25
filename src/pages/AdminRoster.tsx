@@ -293,6 +293,19 @@ function SidCheck() {
       && (!from || Date.parse(r.voted_at) >= Date.parse(from)) && (!to || Date.parse(r.voted_at) <= Date.parse(to))
       && (!desk || r.voted_desk_name === desk))
     .sort((a, b) => a.voted_at!.localeCompare(b.voted_at!));
+  // 목록에 없는 체크 찾기 (FR-132): 목록에서 나온 학과를 골라, 그 학과에서 체크됐는데 목록에 없는 사람을 찾는다
+  type MissRow = { sid: string | null; name: string; dept: string; voted_at: string; station_name: string; desk_name: string; operator_name: string };
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const [missing, setMissing] = useState<MissRow[] | null>(null);
+  const [missBusy, setMissBusy] = useState(false);
+  const deptCounts = [...(rows ?? []).reduce((m, r) => (r.dept ? m.set(r.dept, (m.get(r.dept) ?? 0) + 1) : m), new Map<string, number>())].sort((a, b) => b[1] - a[1]);
+  const pickedDepts = picked ?? deptCounts.slice(0, 1).map((d) => d[0]);
+  const findMissing = async () => {
+    setMissBusy(true); setErr('');
+    try { setMissing((await api<{ rows: MissRow[] }>('/roster/check-sids-missing', { body: { sids, depts: pickedDepts } })).rows); }
+    catch (e) { setErr(e instanceof Error ? e.message : '찾지 못했습니다.'); }
+    finally { setMissBusy(false); }
+  };
   const when = (at: string) => new Date(at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
   const copy = async () => {
     const lines = shown.map((r) => [r.sid, SID_RESULT[r.result], r.name ?? '', r.dept ?? '', r.voted_at ? when(r.voted_at) : '', r.voted_station_name ?? '', r.voted_desk_name ?? ''].join('\t'));
@@ -303,7 +316,7 @@ function SidCheck() {
     <div className="card stack">
       <h1>학번 일괄 대조</h1>
       <p className="muted small">종이 명부 등에 적어 둔 학번을 붙여 넣으면 학번마다 시스템에 체크되어 있는지 알려 줍니다. 줄바꿈, 띄어쓰기, 쉼표로 구분합니다. 기록은 바꾸지 않고, 대조한 사실은 접근 로그에 남습니다.</p>
-      <textarea id="sid-check" aria-label="대조할 학번 목록" className="input" rows={6} placeholder={'202012345\n202112346\n…'} value={text} onChange={(e) => { setText(e.target.value); setRows(null); }} />
+      <textarea id="sid-check" aria-label="대조할 학번 목록" className="input" rows={6} placeholder={'202012345\n202112346\n…'} value={text} onChange={(e) => { setText(e.target.value); setRows(null); setMissing(null); setPicked(null); }} />
       <div className="row between">
         <span className="muted small">{fmtNum(sids.length)}개</span>
         <button className="btn primary" disabled={busy || sids.length === 0} onClick={check}>{busy ? '대조하는 중…' : '대조'}</button>
@@ -353,6 +366,43 @@ function SidCheck() {
               </tbody>
             </table>
           </div>
+          {deptCounts.length > 0 && (
+            <div className="stack" style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+              <b>목록에 없는 체크 찾기</b>
+              <p className="muted small">고른 학과에서 체크됐는데 위 목록에 학번이 없는 사람을 찾습니다.</p>
+              <div className="chips">
+                {deptCounts.map(([d, n]) => {
+                  const on = pickedDepts.includes(d);
+                  return <button key={d} className={`chip ${on ? 'active' : ''}`} aria-pressed={on} onClick={() => { setPicked(on ? pickedDepts.filter((x) => x !== d) : [...pickedDepts, d]); setMissing(null); }}>{d} {n}</button>;
+                })}
+              </div>
+              <div><button className="btn primary" disabled={missBusy || pickedDepts.length === 0} onClick={findMissing}>{missBusy ? '찾는 중…' : '목록에 없는 체크 찾기'}</button></div>
+              {missing && (
+                <>
+                  <div className={`alert ${missing.length > 0 ? 'warn' : 'good'} small`}>목록에 없는데 체크된 사람 {fmtNum(missing.length)}명</div>
+                  {missing.length > 0 && (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table>
+                        <thead><tr><th>체크 시각</th><th>학번</th><th>이름</th><th>학과</th><th>투표소 · 창구</th><th>담당자</th></tr></thead>
+                        <tbody>
+                          {missing.map((r, i) => (
+                            <tr key={i}>
+                              <td className="small">{fmtTime(r.voted_at)}</td>
+                              <td className="mono">{r.sid ?? <span className="muted">없음</span>}</td>
+                              <td>{r.name}</td>
+                              <td>{r.dept}</td>
+                              <td className="small">{r.station_name}{r.desk_name ? ` · ${r.desk_name}` : ''}</td>
+                              <td className="small">{r.operator_name}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>
