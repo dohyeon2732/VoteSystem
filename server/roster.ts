@@ -318,6 +318,8 @@ const sumLive = (rows: StationCounts[]) => ({
 });
 
 export interface Forecast {
+  /** 예상을 낸 기준 시각. null이면 지금 (FR-128) */
+  as_of: string | null;
   today: string; today_gain: number; today_leave_gain: number;
   past: { date: string; gain: number; total: number }[];
   avg_gain: number; ratio: number; ratio_applied: boolean;
@@ -332,7 +334,7 @@ const FORECAST_MIN_BASE = 30;
  * 남은 구간마다 지난 투표일의 같은 구간 증가 평균에 오늘 속도 비율(오늘 지금까지 ÷ 지난 날 같은 시각까지 평균)을 곱한다.
  * 체크 기록은 1시간 단위로 묶여 있어, 지난 날의 "같은 시각" 값은 걸친 1시간을 지난 분만큼 나눠 계산한다.
  */
-export function buildForecast(buckets: { start: number; net: number; leave: number }[], dates: string[], times: string[], now: number): Forecast | null {
+export function buildForecast(buckets: { start: number; net: number; leave: number }[], dates: string[], times: string[], now: number, asOf: string | null = null): Forecast | null {
   const today = kstDate(now);
   if (!dates.includes(today)) return null;
   const of = (date: string) => buckets.filter((b) => kstDate(b.start) === date);
@@ -341,7 +343,9 @@ export function buildForecast(buckets: { start: number; net: number; leave: numb
   const shift = (date: string) => slotEpoch(today, '00:00') - slotEpoch(date, '00:00');
   const pastDates = dates.filter((d) => d < today && total(d) > 0);
   if (!pastDates.length) return null;
-  const todayGain = total(today), todayLeave = of(today).reduce((a, b) => a + b.leave, 0);
+  // 기준 시각까지의 오늘 증가. 지난 시각을 기준으로 되짚을 때는 그 뒤 기록을 쓰지 않는다 (FR-128)
+  const seen = of(today).filter((b) => b.start < now);
+  const todayGain = seen.reduce((a, b) => a + b.net, 0), todayLeave = seen.reduce((a, b) => a + b.leave, 0);
   const sameTime = pastDates.map((d) => gainTo(d, now - shift(d)));
   const avg = sameTime.reduce((a, x) => a + x, 0) / pastDates.length;
   const applied = avg >= FORECAST_MIN_BASE;
@@ -355,7 +359,7 @@ export function buildForecast(buckets: { start: number; net: number; leave: numb
     return { time: p.time, add, leave_add: Math.round(add * leaveShare) };
   });
   return {
-    today, today_gain: todayGain, today_leave_gain: todayLeave,
+    as_of: asOf, today, today_gain: todayGain, today_leave_gain: todayLeave,
     past: pastDates.map((d, i) => ({ date: d, gain: Math.round(sameTime[i]), total: total(d) })),
     avg_gain: Math.round(avg), ratio: Math.round(ratio * 1000) / 1000, ratio_applied: applied, points,
   };
@@ -364,13 +368,14 @@ export function buildForecast(buckets: { start: number; net: number; leave: numb
 /** 현황판에 붙이는 실시간·대조 정보 (15.6). v1.4: 투표소 값은 창구 합, 창구별 내역을 함께 준다. */
 export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station[], extensionEnabled: boolean, points: { date: string; time: string; epoch: number }[] = []) {
   const active = await rosterActive(db);
-  if (!active) return { roster_active: false, stations: [], live_series: [], forecast: null };
+  if (!active) return { roster_active: false, stations: [], live_series: [], forecast: null, forecasts_past: [] };
   const [live, wins, desks, hourly] = await Promise.all([db.votes.liveCounts(), db.all<TallyWindow>('tally_window'), allDesks(db), db.votes.hourlyCounts()]);
   const dates = new Set(days.filter((d) => !d.is_extension || extensionEnabled).map((d) => d.date));
   const now = Date.now();
   // 실시간 추이 (FR-119): 투표일마다 매 정각과 그날 마지막 종료 시각에, 그때까지의 순 체크 인원(체크 시각 기준)
   let live_series: { date: string; time: string; cumulative: number; leave_cumulative: number }[];
   let forecast: Forecast | null = null;
+  let forecasts_past: Forecast[] = [];
   if (hourly) {
     const buckets = hourly.map((h) => ({ start: Date.parse(`${h.hour}:00:00Z`), net: Number(h.net), leave: Number(h.leave_net) }));
     const mins = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
@@ -384,7 +389,11 @@ export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station
         const past = buckets.filter((b) => b.start < p.epoch);
         return { date: p.date, time: p.time, cumulative: past.reduce((a, b) => a + b.net, 0), leave_cumulative: past.reduce((a, b) => a + b.leave, 0) };
       });
-    forecast = buildForecast(buckets, [...dates].sort(), times, now);
+    const sorted = [...dates].sort(), today = kstDate(now);
+    forecast = buildForecast(buckets, sorted, times, now);
+    // 오늘 지난 정각마다 그 시각 기준으로 다시 낸 예상 (FR-128). 종료 시각은 남은 구간이 없어 뺀다
+    if (forecast) forecasts_past = times.slice(0, -1).filter((t) => slotEpoch(today, t) <= now)
+      .map((t) => buildForecast(buckets, sorted, times, slotEpoch(today, t), t)).filter((f): f is Forecast => !!f);
   } else {
     // DB 함수가 없을 때: 지난 집계 시점마다 그때까지 마감된 구간의 체크 인원 합 (FR-118)
     live_series = points.filter((p) => p.epoch <= now).map((p) => {
@@ -394,7 +403,7 @@ export async function tallyExtras(db: Db, days: ElectionDay[], stations: Station
     });
   }
   return {
-    roster_active: true, live_series, forecast,
+    roster_active: true, live_series, forecast, forecasts_past,
     stations: stations.map((st) => {
       const l = sumLive(live.filter((x) => x.station_id === st.id));
       const mine = wins.filter((w) => w.station_id === st.id);

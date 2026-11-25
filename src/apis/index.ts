@@ -54,10 +54,12 @@ export interface RosterStation {
 }
 export interface Tally {
   election: Election; points: TallyPoint[]; pending_requests: number; server_now: string;
-  roster: { roster_active: boolean; stations: RosterStation[]; live_series?: { date: string; time: string; cumulative: number; leave_cumulative: number }[]; forecast?: Forecast | null };
+  roster: { roster_active: boolean; stations: RosterStation[]; live_series?: { date: string; time: string; cumulative: number; leave_cumulative: number }[]; forecast?: Forecast | null; forecasts_past?: Forecast[] };
 }
 /** 오늘 남은 시간의 예상 증가 (FR-127) */
 export interface Forecast {
+  /** 예상을 낸 기준 시각. null이면 지금 (FR-128) */
+  as_of: string | null;
   today: string; today_gain: number; today_leave_gain: number;
   past: { date: string; gain: number; total: number }[];
   avg_gain: number; ratio: number; ratio_applied: boolean;
