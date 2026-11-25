@@ -240,7 +240,7 @@ export default function Dashboard() {
               )}
               {ext && (
                 <div>
-                  <b>연장 마감({shortDate(ext.date)}) 예상 {fmtPct(ext.lowPct)} ~ {fmtPct(ext.highPct)}</b>
+                  <b>연장 마감({shortDate(ext.date)}) 예상 {fmtPct(ext.lowPct)}{ext.highPct > ext.lowPct && ` ~ ${fmtPct(ext.highPct)}`}</b>
                   {' · '}{ext.lowPct >= th ? `기준 ${th}% 넘김` : ext.highPct >= th ? `낮게 보면 기준 ${th}% 부족` : `기준 ${th}% 부족`}
                 </div>
               )}

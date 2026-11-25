@@ -341,7 +341,8 @@ export interface Forecast {
 
 /**
  * 연장일 하루의 예상 증가 범위 (FR-131). 본투표 마지막 날에만 낸다.
- * 높게: 본투표 날들의 하루 증가 평균. 낮게: 오늘 하루 증가 × 줄어든 비율(오늘 ÷ 전날, 최대 1).
+ * 높게: 오늘 하루 증가만큼. 낮게: 오늘 하루 증가 × 줄어든 비율(오늘 ÷ 전날, 최대 1).
+ * 첫날이 유난히 커서 날 평균은 쓰지 않는다.
  */
 export function buildExtension(f: Forecast, days: { date: string; is_extension: boolean }[]): Forecast['extension'] {
   const regular = days.filter((d) => !d.is_extension).map((d) => d.date).sort();
@@ -349,9 +350,8 @@ export function buildExtension(f: Forecast, days: { date: string; is_extension: 
   if (!ext || regular.at(-1) !== f.today || !f.past.length) return null;
   const todayTotal = f.today_gain + (f.points.at(-1)?.add ?? 0);
   const prev = f.past[f.past.length - 1].total;
-  const mean = (f.past.reduce((a, p) => a + p.total, 0) + todayTotal) / (f.past.length + 1);
   const decayed = todayTotal * (prev > 0 ? Math.min(1, todayTotal / prev) : 1);
-  const low = Math.max(0, Math.round(Math.min(mean, decayed))), high = Math.max(0, Math.round(Math.max(mean, decayed)));
+  const low = Math.max(0, Math.round(decayed)), high = Math.max(low, Math.round(todayTotal));
   const share = f.today_gain > 0 ? Math.max(0, f.today_leave_gain) / f.today_gain : 0;
   return { date: ext, low, high, low_leave: Math.round(low * share), high_leave: Math.round(high * share) };
 }
