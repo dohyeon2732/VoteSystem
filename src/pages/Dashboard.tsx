@@ -182,7 +182,6 @@ export default function Dashboard() {
               <div className="muted">
                 같은 시각까지: {fc.past.map((p) => `${shortDate(p.date)} ${signed(p.gain)}명`).join(' · ')}
                 {fc.past.length > 1 && ` · 평균 ${signed(fc.avg_gain)}명`}
-                {fc.avg_gain > 0 && <> → 오늘은 {fc.past.length > 1 ? '평균' : '전일'}의 <b style={{ color: 'var(--text)' }}>{Math.round(fc.ratio * 100)}%</b> ({signed(fc.today_gain - fc.avg_gain)}명)</>}
               </div>
               {fcEnd && (
                 <div>
@@ -190,9 +189,6 @@ export default function Dashboard() {
                   {' · '}{pctOf(fcEndCum, fcEndVoters) >= th ? `기준 ${th}% 넘김` : `기준 ${th}%까지 ${fmtNum(remainingToThreshold(fcEndVoters, fcEndCum, th))}명 부족`}
                 </div>
               )}
-              <div className="muted">
-                점선은 예상입니다. 지난 투표일의 같은 1시간 구간 증가 평균{fc.ratio_applied ? `에 오늘 속도(${Math.round(fc.ratio * 100)}%)를 곱했습니다.` : '을 그대로 더했습니다(비교할 인원이 아직 적어 오늘 속도는 반영하지 않음).'}
-              </div>
             </div>
           )}
         </div>
