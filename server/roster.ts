@@ -8,7 +8,7 @@ import {
 } from './core.js';
 import type {
   BallotEvent, BallotSource, Db, DeviceSession, District, Election, ElectionDay, Entry, Member, OperatorLog, Slot, Station,
-  TallyWindow, Voter, VoterAccessLog, VoterKind, BallotPad, Desk, PadMove, PadReading, StationCounts, TagIssue, Dept, VoterSid,
+  TallyWindow, Voter, VoterAccessLog, VoterKind, BallotPad, Desk, PadMove, PadReading, StationCounts, TagIssue, Dept, VoterSid, CountResult,
 } from './db/types.js';
 import {
   addDepts, allDesks, deptLabel, deskOf, deskView, mergedIds, parseDepts, pickDesk, tagBaseline, tagTotalOf,
@@ -1244,6 +1244,49 @@ route('GET', '/roster/checked-sids', async (ctx) => {
   const missing = rows.filter((r) => !r.sid).length;
   await accessLog(ctx, null, 'checked_sids', null, 'ok', `${pl.districts.find((d) => d.id === districtId)?.name ?? ''} · ${rows.length}건 · 학번 없음 ${missing}건`);
   return { status: 200, body: { rows, missing, sid_ready: sids !== null }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
+});
+
+// ---------- 개표 집계 (FR-133) ----------
+/** 선거구별 시스템 투표 인원·유권자수와 저장된 개표 값. 총관리자만. */
+route('GET', '/count', async (ctx) => {
+  requireAdmin(ctx);
+  const [pl, counts, saved] = await Promise.all([places(ctx.db), ctx.db.votes.rosterCounts(), ctx.db.all<CountResult>('count_result').catch(() => null)]);
+  const rows = pl.districts.map((d) => {
+    const mine = counts.filter((c) => c.district_id === d.id);
+    const voted = mine.reduce((a, c) => a + Number(c.voted), 0);
+    const eligible = mine.filter((c) => c.kind === 'regular').reduce((a, c) => a + Number(c.total), 0)
+      + mine.filter((c) => c.kind !== 'regular').reduce((a, c) => a + Number(c.voted), 0);
+    const r = saved?.find((x) => x.id === d.id) ?? null;
+    return {
+      district_id: d.id, name: d.name, system_voted: voted, eligible,
+      result: r ? { agree: Number(r.agree), oppose: Number(r.oppose), invalid: Number(r.invalid), voters: r.voters == null ? null : Number(r.voters), created_at: r.created_at, updated_at: r.updated_at, updated_by: r.updated_by } : null,
+    };
+  });
+  return { status: 200, body: { rows, ready: saved !== null }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
+});
+
+route('PUT', '/count/:id', async (ctx) => {
+  const me = requireAdmin(ctx);
+  const pl = await places(ctx.db);
+  const d = pl.districts.find((x) => x.id === ctx.params.id);
+  if (!d) throw new HttpError(404, 'not_found', '선거구를 찾을 수 없습니다.');
+  const num = (v: unknown, name: string) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0 || n > 100000) throw new HttpError(400, 'bad_request', `${name} 값이 올바르지 않습니다.`);
+    return n;
+  };
+  const b = ctx.req.body ?? {};
+  const patch = {
+    agree: num(b.agree, '찬성'), oppose: num(b.oppose, '반대'), invalid: num(b.invalid, '무효'),
+    voters: b.voters == null || b.voters === '' ? null : num(b.voters, '투표 인원'), updated_at: nowIso(), updated_by: me.name,
+  };
+  let old: CountResult | null;
+  try { old = await ctx.db.get<CountResult>('count_result', { id: d.id }); }
+  catch { throw new HttpError(503, 'not_ready', '개표 값을 저장할 표가 아직 없습니다. Supabase SQL 편집기에서 schema.sql을 다시 실행하세요.'); }
+  if (old) await ctx.db.update('count_result', { id: d.id }, patch);
+  else await ctx.db.insert<CountResult>('count_result', { id: d.id, ...patch, created_at: patch.updated_at });
+  await accessLog(ctx, null, 'count.save', null, 'ok', `${d.name} · 찬성 ${patch.agree} · 반대 ${patch.oppose} · 무효 ${patch.invalid}${patch.voters == null ? '' : ` · 투표 인원 ${patch.voters}`}${old ? ' (수정)' : ''}`);
+  return { status: 200, body: { ok: true } };
 });
 
 // ---------- 보유기간·파기 (FR-99) ----------

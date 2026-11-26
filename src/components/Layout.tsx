@@ -38,6 +38,7 @@ export default function Layout() {
               <>
                 <NavLink to="/admin/confirm" className={cls}>확정·승인{pending > 0 && <span className="badge">{pending}</span>}</NavLink>
                 <NavLink to="/notice" className={cls}>공지</NavLink>
+                <NavLink to="/admin/count" className={cls}>개표</NavLink>
                 <NavLink to="/admin/roster" className={cls}>선거인명부</NavLink>
                 <NavLink to="/admin/stations" className={cls}>투표소 계정</NavLink>
                 <NavLink to="/admin/issues" className={cls}>창구·이슈{openIssues > 0 && <span className="badge">{openIssues}</span>}</NavLink>

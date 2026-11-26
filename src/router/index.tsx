@@ -12,6 +12,7 @@ import Log from '../pages/Log';
 import Requests from '../pages/Requests';
 import RosterCheck from '../pages/RosterCheck';
 import AdminRoster from '../pages/AdminRoster';
+import AdminCount from '../pages/AdminCount';
 import AdminStations from '../pages/AdminStations';
 import AdminIssues from '../pages/AdminIssues';
 import Reconcile from '../pages/Reconcile';
@@ -55,6 +56,7 @@ export default function AppRouter() {
         <Route path="/check" element={<RosterCheck />} />
         <Route path="/reconcile" element={<Reconcile />} />
         <Route path="/admin/roster" element={<Guard admin><AdminRoster /></Guard>} />
+        <Route path="/admin/count" element={<Guard admin><AdminCount /></Guard>} />
         <Route path="/admin/stations" element={<Guard admin><AdminStations /></Guard>} />
         <Route path="/admin/issues" element={<Guard admin><AdminIssues /></Guard>} />
         <Route path="/admin/access-log" element={<Guard admin><AccessLog /></Guard>} />

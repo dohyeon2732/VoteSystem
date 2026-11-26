@@ -79,6 +79,10 @@ create index if not exists voter_access_log_at_idx on voter_access_log(at);
 -- 체크한 학번 (FR-130): 선거인별로 암호화한 학번 한 줄. id = voter.id
 create table if not exists voter_sid (id text primary key, sid_enc text not null, created_at text not null);
 alter table voter_sid enable row level security;
+-- 개표 집계 (FR-133): 선거구별 한 줄. id = district.id
+create table if not exists count_result (id text primary key, agree integer not null, oppose integer not null, invalid integer not null,
+  voters integer, created_at text not null, updated_at text not null, updated_by text not null);
+alter table count_result enable row level security;
 alter table voter enable row level security;
 alter table ballot_event enable row level security;
 alter table tally_window enable row level security;
