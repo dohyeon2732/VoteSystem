@@ -76,6 +76,16 @@ export default function AdminCount() {
   const allDone = done.length === rows.length && rows.length > 0;
   const final = !allDone ? null : !turnoutOk ? '투표율 미달' : agree > oppose ? '가결' : '부결';
 
+  // 최상단 요약: 선거인수 · 개표율 · 찬성 · 반대 · 무효
+  const countedVoters = sum(votersOf), ballots = agree + oppose + invalid;
+  const share = (x: number) => (ballots > 0 ? `개표한 표의 ${fmtPct(pctOf(x, ballots))}` : '');
+  const tiles: { label: string; value: string; sub: string; color?: string }[] = [
+    { label: '선거인수', value: fmtNum(eligibleAll), sub: `투표 ${fmtNum(votersAll)}명 · ${fmtPct(turnout)}` },
+    { label: '개표율', value: fmtPct(pctOf(countedVoters, votersAll)), sub: `${fmtNum(countedVoters)} / ${fmtNum(votersAll)}표 · ${done.length} / ${rows.length}곳` },
+    { label: '찬성', value: fmtNum(agree), sub: share(agree), color: 'var(--good)' },
+    { label: '반대', value: fmtNum(oppose), sub: share(oppose), color: 'var(--danger)' },
+    { label: '무효', value: fmtNum(invalid), sub: share(invalid) },
+  ];
   const copy = async () => {
     const lines = rows.map((r) => {
       const v = votersOf(r), x = r.result, c = counted(r);
@@ -89,6 +99,15 @@ export default function AdminCount() {
 
   return (
     <main className="stack">
+      <div className="card" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12 }}>
+        {tiles.map((t) => (
+          <div key={t.label}>
+            <div className="small muted">{t.label}</div>
+            <div className="mono" style={{ fontSize: 26, fontWeight: 700, lineHeight: 1.3, color: t.color }}>{t.value}</div>
+            <div className="small muted">{t.sub}</div>
+          </div>
+        ))}
+      </div>
       <div className="card stack">
         <div className="row between"><h1>개표</h1><span className="pill muted">개표 완료 {done.length} / {rows.length}</span></div>
         <p className="muted small">먼저 꼬리표 수를 넣고 확인합니다. 투표 인원과 일치해야 찬성·반대·무효를 넣을 수 있습니다. 기권은 자동으로 계산합니다. 투표 인원은 시스템 체크 인원이 기본이고 고칠 수 있습니다. 총관리자만 볼 수 있습니다.</p>
