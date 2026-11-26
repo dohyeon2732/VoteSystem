@@ -1247,45 +1247,58 @@ route('GET', '/roster/checked-sids', async (ctx) => {
 });
 
 // ---------- 개표 집계 (FR-133) ----------
-/** 선거구별 시스템 투표 인원·유권자수와 저장된 개표 값. 총관리자만. */
+/** 개표 단위 = 투표소. 투표소가 하나인 선거구는 선거구 이름으로 부른다 */
+function countUnits(pl: { stations: Station[]; districts: District[] }) {
+  return pl.districts.flatMap((d) => {
+    const sts = pl.stations.filter((s) => s.district_id === d.id);
+    return sts.map((s) => ({ id: s.id, name: sts.length > 1 ? s.name : d.name }));
+  });
+}
+
+/** 투표소별 시스템 투표 인원과 저장된 꼬리표 수·개표 값. 총관리자만. */
 route('GET', '/count', async (ctx) => {
   requireAdmin(ctx);
-  const [pl, counts, saved] = await Promise.all([places(ctx.db), ctx.db.votes.rosterCounts(), ctx.db.all<CountResult>('count_result').catch(() => null)]);
-  const rows = pl.districts.map((d) => {
-    const mine = counts.filter((c) => c.district_id === d.id);
-    const voted = mine.reduce((a, c) => a + Number(c.voted), 0);
-    const eligible = mine.filter((c) => c.kind === 'regular').reduce((a, c) => a + Number(c.total), 0)
-      + mine.filter((c) => c.kind !== 'regular').reduce((a, c) => a + Number(c.voted), 0);
-    const r = saved?.find((x) => x.id === d.id) ?? null;
+  const [pl, counts, live, saved] = await Promise.all([
+    places(ctx.db), ctx.db.votes.rosterCounts(), ctx.db.votes.liveCounts(), ctx.db.all<CountResult>('count_result').catch(() => null),
+  ]);
+  const nn = (v: number | null | undefined) => (v == null ? null : Number(v));
+  const rows = countUnits(pl).map((u) => {
+    const r = saved?.find((x) => x.id === u.id) ?? null;
     return {
-      district_id: d.id, name: d.name, system_voted: voted, eligible,
-      result: r ? { agree: Number(r.agree), oppose: Number(r.oppose), invalid: Number(r.invalid), voters: r.voters == null ? null : Number(r.voters), created_at: r.created_at, updated_at: r.updated_at, updated_by: r.updated_by } : null,
+      id: u.id, name: u.name, system_voted: live.filter((x) => x.station_id === u.id).reduce((a, x) => a + Number(x.net ?? 0), 0),
+      result: r ? { voters: nn(r.voters), tags: nn(r.tags), agree: nn(r.agree), oppose: nn(r.oppose), invalid: nn(r.invalid), counted_at: r.counted_at ?? null, updated_at: r.updated_at, updated_by: r.updated_by } : null,
     };
   });
-  return { status: 200, body: { rows, ready: saved !== null }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
+  const eligible = counts.reduce((a, c) => a + Number(c.kind === 'regular' ? c.total : c.voted), 0);
+  return { status: 200, body: { rows, eligible, ready: saved !== null }, headers: { 'Cache-Control': 'no-store' } } satisfies ApiResponse;
 });
 
+/** 꼬리표 확인(투표 인원·꼬리표 수) 또는 개표 결과 저장. 결과는 꼬리표 수와 투표 인원이 일치해야 받는다. */
 route('PUT', '/count/:id', async (ctx) => {
   const me = requireAdmin(ctx);
-  const pl = await places(ctx.db);
-  const d = pl.districts.find((x) => x.id === ctx.params.id);
-  if (!d) throw new HttpError(404, 'not_found', '선거구를 찾을 수 없습니다.');
+  const u = countUnits(await places(ctx.db)).find((x) => x.id === ctx.params.id);
+  if (!u) throw new HttpError(404, 'not_found', '투표소를 찾을 수 없습니다.');
   const num = (v: unknown, name: string) => {
     const n = Number(v);
-    if (!Number.isInteger(n) || n < 0 || n > 100000) throw new HttpError(400, 'bad_request', `${name} 값이 올바르지 않습니다.`);
+    if (v === '' || v == null || !Number.isInteger(n) || n < 0 || n > 100000) throw new HttpError(400, 'bad_request', `${name} 값이 올바르지 않습니다.`);
     return n;
   };
   const b = ctx.req.body ?? {};
-  const patch = {
-    agree: num(b.agree, '찬성'), oppose: num(b.oppose, '반대'), invalid: num(b.invalid, '무효'),
-    voters: b.voters == null || b.voters === '' ? null : num(b.voters, '투표 인원'), updated_at: nowIso(), updated_by: me.name,
-  };
+  const voters = num(b.voters, '투표 인원'), tags = num(b.tags, '꼬리표 수');
+  const hasResult = b.agree != null || b.oppose != null || b.invalid != null;
+  const notReady = () => new HttpError(503, 'not_ready', '개표 값을 저장할 표가 아직 준비되지 않았습니다. Supabase SQL 편집기에서 schema.sql을 다시 실행하세요.');
   let old: CountResult | null;
-  try { old = await ctx.db.get<CountResult>('count_result', { id: d.id }); }
-  catch { throw new HttpError(503, 'not_ready', '개표 값을 저장할 표가 아직 없습니다. Supabase SQL 편집기에서 schema.sql을 다시 실행하세요.'); }
-  if (old) await ctx.db.update('count_result', { id: d.id }, patch);
-  else await ctx.db.insert<CountResult>('count_result', { id: d.id, ...patch, created_at: patch.updated_at });
-  await accessLog(ctx, null, 'count.save', null, 'ok', `${d.name} · 찬성 ${patch.agree} · 반대 ${patch.oppose} · 무효 ${patch.invalid}${patch.voters == null ? '' : ` · 투표 인원 ${patch.voters}`}${old ? ' (수정)' : ''}`);
+  try { old = await ctx.db.get<CountResult>('count_result', { id: u.id }); } catch { throw notReady(); }
+  if (tags !== voters && (hasResult || old?.agree != null)) throw new HttpError(400, 'tag_mismatch', '꼬리표 수와 투표 인원이 일치해야 개표 결과를 저장할 수 있습니다.');
+  const at = nowIso();
+  const patch: Partial<CountResult> = { voters, tags, updated_at: at, updated_by: me.name };
+  if (hasResult) Object.assign(patch, { agree: num(b.agree, '찬성'), oppose: num(b.oppose, '반대'), invalid: num(b.invalid, '무효'), counted_at: old?.counted_at ?? at });
+  try {
+    if (old) await ctx.db.update('count_result', { id: u.id }, patch);
+    else await ctx.db.insert('count_result', { id: u.id, agree: null, oppose: null, invalid: null, counted_at: null, ...patch, created_at: at });
+  } catch { throw notReady(); }
+  await accessLog(ctx, u.id, 'count.save', null, tags === voters ? 'ok' : 'mismatch',
+    `${u.name} · 투표 인원 ${voters} · 꼬리표 ${tags}${hasResult ? ` · 찬성 ${patch.agree} · 반대 ${patch.oppose} · 무효 ${patch.invalid}${old?.agree != null ? ' (수정)' : ''}` : ''}`);
   return { status: 200, body: { ok: true } };
 });
 

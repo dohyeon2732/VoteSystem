@@ -152,8 +152,8 @@ export type VoterKind = 'regular' | 'associate';
 export type BallotSource = 'live' | 'missed' | 'sheet' | 'restore';
 /** 체크한 학번 (FR-130). id = voter.id */
 export interface VoterSid { id: string; sid_enc: string; created_at: string }
-/** 개표 집계 (FR-133). id = district.id, voters는 고친 투표 인원(없으면 시스템 값) */
-export interface CountResult { id: string; agree: number; oppose: number; invalid: number; voters: number | null; created_at: string; updated_at: string; updated_by: string }
+/** 개표 집계 (FR-133). id = station.id. tags = 꼬리표 수, 찬성·반대·무효는 개표 전에는 null, counted_at = 개표 결과를 처음 저장한 시각 */
+export interface CountResult { id: string; agree: number | null; oppose: number | null; invalid: number | null; voters: number | null; tags: number | null; counted_at: string | null; created_at: string; updated_at: string; updated_by: string }
 export interface Voter {
   id: string; sid_hash: string; name_enc: string; dept_enc: string; district_id: string; kind: VoterKind;
   voted_at: string | null; voted_station_id: string | null; voted_event_id: string | null;
