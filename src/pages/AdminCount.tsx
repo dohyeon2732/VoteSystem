@@ -76,7 +76,7 @@ export default function AdminCount() {
   const allDone = done.length === rows.length && rows.length > 0;
   const final = !allDone ? null : !turnoutOk ? '투표율 미달' : agree > oppose ? '가결' : '부결';
 
-  // 최상단 요약: 선거인수 · 개표율 · 찬성 · 반대 · 무효
+  // 최상단 요약: 선거인수 · 개표율 · 찬성 · 반대 · 무효·기권
   const countedVoters = sum(votersOf), ballots = agree + oppose + invalid;
   const share = (x: number) => (ballots > 0 ? `개표한 표의 ${fmtPct(pctOf(x, ballots))}` : '');
   const tiles: { label: string; value: string; sub: string; color?: string }[] = [
@@ -84,7 +84,7 @@ export default function AdminCount() {
     { label: '개표율', value: fmtPct(pctOf(countedVoters, votersAll)), sub: `${fmtNum(countedVoters)} / ${fmtNum(votersAll)}표 · ${done.length} / ${rows.length}곳` },
     { label: '찬성', value: fmtNum(agree), sub: share(agree), color: 'var(--good)' },
     { label: '반대', value: fmtNum(oppose), sub: share(oppose), color: 'var(--danger)' },
-    { label: '무효', value: fmtNum(invalid), sub: share(invalid) },
+    { label: '무효·기권', value: fmtNum(invalid + abstain), sub: `무효 ${fmtNum(invalid)} · 기권 ${fmtNum(abstain)}` },
   ];
   const copy = async () => {
     const lines = rows.map((r) => {
